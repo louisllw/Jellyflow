@@ -5,7 +5,12 @@ import { mediaAuthHeader } from "../api/jellyfin.js";
 import { fmtClock, isAudioOnly, isLiveTv, secondsToTicks, ticksToSeconds } from "../api/utils.js";
 import { IconBack, IconSettings, IconInfo } from "./Icons.jsx";
 import { combineHlsMasters } from "./adaptiveManifest.js";
-import { autoHlsConfig, connectionBandwidthEstimate, levelForBandwidth } from "./adaptivePlayback.js";
+import {
+  autoHlsConfig,
+  autoStepUpDecision,
+  connectionBandwidthEstimate,
+  levelForBandwidth,
+} from "./adaptivePlayback.js";
 import { findSkippableSegment, transcodeReasons } from "./playbackMetadata.js";
 import {
   AUTO_CEILING_KEY,
@@ -447,12 +452,12 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
           playbackReason,
           level: null,
           bandwidthEstimate: null,
+          autoDecision: quality === "auto" ? "Measuring connection…" : null,
         }));
         const hls = new Hls({
           enableWorker: true,
           lowLatencyMode: false,
           startLevel: -1,
-          capLevelOnFPSDrop: quality === "auto",
           // Seed HLS's estimator from the conservative connection profile
           // chosen at startup. After the first fragments it continuously
           // measures real throughput and switches variants inside this same
@@ -493,6 +498,7 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
             level,
             bandwidthEstimate: hls.bandwidthEstimate,
             playMethod: "Transcode (HLS)",
+            autoDecision: quality === "auto" && level?.height ? `Playing ${level.height}p` : s?.autoDecision,
           }));
         });
 
@@ -532,8 +538,53 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
         untrackFns.push(() => window.removeEventListener("online", resumeAfterNetworkReturn));
         untrackFns.push(() => window.removeEventListener("offline", pauseLoadsWhileOffline));
         let networkRetries = 0;
-        hls.on(Hls.Events.FRAG_LOADED, () => {
+        let strongAutoSamples = 0;
+        let lastAutoPromotionAt = 0;
+        hls.on(Hls.Events.FRAG_LOADED, (_e, data) => {
           networkRetries = 0;
+          if (quality !== "auto" || !data?.stats || !hls.levels?.length) return;
+
+          const loadTimeMs = data.stats.loading?.end - data.stats.loading?.start;
+          const fragmentBandwidth = loadTimeMs > 0 && data.stats.loaded > 0
+            ? (data.stats.loaded * 8_000) / loadTimeMs
+            : 0;
+          const bufferedEnd = v.buffered.length ? v.buffered.end(v.buffered.length - 1) : 0;
+          const currentLevel = Number.isInteger(data.frag?.level) ? data.frag.level : hls.currentLevel;
+          const decision = autoStepUpDecision({
+            levels: hls.levels,
+            currentLevel,
+            fragmentBandwidth,
+            bufferedAhead: Math.max(0, bufferedEnd - v.currentTime),
+            strongSamples: strongAutoSamples,
+          });
+          strongAutoSamples = decision.strongSamples;
+
+          if (decision.level > currentLevel && Date.now() - lastAutoPromotionAt >= 6_000) {
+            const next = hls.levels[decision.level];
+            const nextBitrate = next?.maxBitrate || next?.bitrate || 0;
+            // Two fast fragment loads plus a healthy buffer are enough to
+            // escape a stale low EWMA. Raise the estimate only as far as the
+            // measured sample safely supports, then let hls.js verify the rung.
+            hls.bandwidthEstimate = Math.max(
+              hls.bandwidthEstimate || 0,
+              Math.min(fragmentBandwidth * 0.85, nextBitrate * 1.5),
+            );
+            hls.nextAutoLevel = decision.level;
+            lastAutoPromotionAt = Date.now();
+            setStats((s) => ({
+              ...(s || {}),
+              bandwidthEstimate: hls.bandwidthEstimate,
+              autoDecision: `Testing ${next?.height ? `${next.height}p` : "next quality"}`,
+            }));
+          } else {
+            setStats((s) => ({
+              ...(s || {}),
+              bandwidthEstimate: hls.bandwidthEstimate,
+              autoDecision: strongAutoSamples
+                ? "Confirming faster connection…"
+                : s?.autoDecision,
+            }));
+          }
         });
         hls.on(Hls.Events.ERROR, (_e, data) => {
           if (data.fatal) {
@@ -1940,6 +1991,10 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
                           ? `${(stats.bandwidthEstimate / 1_000_000).toFixed(1)} Mbps`
                           : "Measuring…"}
                       </b>
+                    </div>
+                    <div className="player-stats-row">
+                      <span>Auto decision</span>
+                      <b>{stats?.autoDecision || "Measuring…"}</b>
                     </div>
                   </>
                 )}

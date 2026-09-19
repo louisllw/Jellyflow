@@ -16,7 +16,7 @@ export function connectionBandwidthEstimate(connection) {
 
 export function levelForBandwidth(levels = [], estimate = 0) {
   if (!levels.length || !Number.isFinite(estimate) || estimate <= 0) return 0;
-  const safeBandwidth = estimate * 0.82;
+  const safeBandwidth = estimate * 0.9;
   let selected = 0;
   let selectedBitrate = 0;
   levels.forEach((level, index) => {
@@ -29,15 +29,51 @@ export function levelForBandwidth(levels = [], estimate = 0) {
   return selected;
 }
 
+function levelBitrate(level) {
+  return level?.maxBitrate || level?.bitrate || 0;
+}
+
+export function autoStepUpDecision({
+  levels = [],
+  currentLevel = 0,
+  fragmentBandwidth = 0,
+  bufferedAhead = 0,
+  strongSamples = 0,
+} = {}) {
+  if (!levels.length || currentLevel < 0 || currentLevel >= levels.length - 1) {
+    return { level: currentLevel, strongSamples: 0 };
+  }
+
+  const current = levels[currentLevel];
+  const currentBitrate = levelBitrate(current);
+  const nextLevel = levels.findIndex((level, index) => (
+    index > currentLevel && (
+      levelBitrate(level) > currentBitrate * 1.05 ||
+      (level?.height || 0) > (current?.height || 0)
+    )
+  ));
+  if (nextLevel < 0) return { level: currentLevel, strongSamples: 0 };
+
+  const nextBitrate = levelBitrate(levels[nextLevel]);
+  const strong = bufferedAhead >= 5 && nextBitrate > 0 && fragmentBandwidth >= nextBitrate * 1.3;
+  const samples = strong ? strongSamples + 1 : 0;
+  return {
+    level: samples >= 2 ? nextLevel : currentLevel,
+    strongSamples: samples >= 2 ? 0 : samples,
+  };
+}
+
 export function autoHlsConfig(defaultEstimate) {
   return {
     // Quality should follow available bandwidth, not the CSS pixel size of a
-    // windowed player. FPS protection remains enabled separately.
+    // windowed player. A short decode wobble must not permanently pin Auto to
+    // a lower rendition; stalls are handled by the explicit recovery path.
     capLevelToPlayerSize: false,
-    abrEwmaFastVoD: 1.5,
-    abrEwmaSlowVoD: 4,
+    capLevelOnFPSDrop: false,
+    abrEwmaFastVoD: 1,
+    abrEwmaSlowVoD: 3,
     abrBandWidthFactor: 0.9,
-    abrBandWidthUpFactor: 0.82,
+    abrBandWidthUpFactor: 0.9,
     abrMaxWithRealBitrate: true,
     maxStarvationDelay: 2,
     maxLoadingDelay: 2,

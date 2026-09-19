@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Link, useParams, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useSession } from "../state/Session.jsx";
 import { Loading, ErrorBox } from "../components/Cards.jsx";
 import { Player } from "../components/Player.jsx";
-import { fmtClock, fmtRuntimeTicks, ticksToSeconds, typeLabel, looksPlayable, isLiveTv } from "../api/utils.js";
+import { fmtRuntimeTicks, ticksToSeconds, typeLabel, looksPlayable, isLiveTv } from "../api/utils.js";
+import { playActionLabel, playbackExitPath } from "../components/playbackState.js";
 
 /**
  * Detail — the single most important screen.
@@ -15,6 +16,7 @@ import { fmtClock, fmtRuntimeTicks, ticksToSeconds, typeLabel, looksPlayable, is
 export function Detail() {
   const { client } = useSession();
   const { id } = useParams();
+  const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
   const [item, setItem] = useState(undefined);
   const [seasons, setSeasons] = useState(null);
@@ -216,11 +218,7 @@ export function Detail() {
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
                   <path d="M8 5.5v13l11-6.5z" />
                 </svg>
-                {playable
-                  ? resumePosition > 30
-                    ? `Resume at ${fmtClock(resumePosition)}`
-                    : "Play"
-                  : "Play next episode"}
+                {playActionLabel(item, { resumePosition })}
               </button>
               {isEpisode && previousEpisode && (
                 <Link className="btn detail-episode-action" to={`/item/${previousEpisode.Id}`}>
@@ -407,6 +405,15 @@ export function Detail() {
                 : ticksToSeconds(playing.UserData?.PlaybackPositionTicks)
           }
           onClose={() => {
+            const exitPath = playbackExitPath(item, playing);
+            setPlaying(null);
+            if (exitPath) {
+              // Consecutive playback advances the player without changing the
+              // detail route. Replace that stale route with the episode the
+              // viewer actually reached before returning to the page.
+              navigate(exitPath, { replace: true });
+              return;
+            }
             // Drop ?play=1 — otherwise closing the player re-runs autoplay on
             // the very next render and the player immediately opens again.
             if (params.get("play")) {
@@ -414,7 +421,6 @@ export function Detail() {
               nextParams.delete("play");
               setParams(nextParams, { replace: true });
             }
-            setPlaying(null);
             retry();
           }}
         />
@@ -548,7 +554,7 @@ function EpisodeCard({ episode, client, current = false }) {
 
   return (
     <article data-episode-id={episode.Id} className={`episode-card ${current ? "episode-card-current" : ""}`}>
-      <Link className="episode-art" to={`/item/${episode.Id}?play=1`} aria-label={`Play ${episode.Name}`}>
+      <Link className="episode-art" to={`/item/${episode.Id}?play=1`} aria-label={`${watched ? "Replay watched" : "Play"} ${episode.Name}`}>
         {art ? (
           <img src={art} alt="" loading="lazy" />
         ) : (
@@ -581,11 +587,11 @@ function EpisodeCard({ episode, client, current = false }) {
         </div>
       </div>
 
-      <Link className="episode-play" to={`/item/${episode.Id}?play=1`} aria-label={`Play ${episode.Name}`}>
+      <Link className="episode-play" to={`/item/${episode.Id}?play=1`} aria-label={`${watched ? "Replay watched" : "Play"} ${episode.Name}`}>
         <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
           <path d="M8 5.5v13l11-6.5z" />
         </svg>
-        <span>Play</span>
+        <span>{playActionLabel(episode)}</span>
       </Link>
     </article>
   );

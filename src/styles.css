@@ -2101,6 +2101,34 @@ img {
   pointer-events: none;
 }
 
+/* Stats and quality remain readable until explicitly dismissed. Restore the
+   bottom positioning context while idle, but keep every part of the normal
+   transport chrome hidden except the open reference panel. */
+.player-idle.player-popover-pinned .player-bottom {
+  opacity: 1;
+  transform: none;
+  pointer-events: none;
+  background: transparent;
+}
+
+.player-idle.player-popover-pinned .player-track,
+.player-idle.player-popover-pinned .player-primary-controls,
+.player-idle.player-popover-pinned .player-time,
+.player-idle.player-popover-pinned .player-title,
+.player-idle.player-popover-pinned .player-secondary-controls > :not(.player-persistent-popover) {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.player-idle.player-popover-pinned .player-persistent-popover {
+  pointer-events: auto;
+}
+
+.player-idle.player-popover-pinned .player-persistent-popover > .player-btn {
+  opacity: 0;
+  pointer-events: none;
+}
+
 .player-video {
   position: absolute;
   inset: 0;

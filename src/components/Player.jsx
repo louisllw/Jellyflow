@@ -6,7 +6,6 @@ import { fmtClock, isAudioOnly, isLiveTv, secondsToTicks, ticksToSeconds } from 
 import { IconBack, IconSettings, IconInfo } from "./Icons.jsx";
 import {
   AUTO_QUALITY_OPTIONS,
-  evaluateAutoQuality,
   initialAutoQuality,
   lowerQualityKey,
 } from "./playerQuality.js";
@@ -16,9 +15,6 @@ const QUALITY_OPTIONS = [
   ...AUTO_QUALITY_OPTIONS.slice().reverse(),
   { key: "original", label: "Original (direct)" },
 ];
-
-const AUTO_SWITCH_INTERVAL_MS = 5_000;
-const AUTO_SWITCH_COOLDOWN_MS = 20_000;
 
 const SPEED_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
 
@@ -76,7 +72,6 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
   const statsTimer = useRef(null);
   const idleTimer = useRef(null);
   const playSessionIdRef = useRef(null);
-  const autoControllerRef = useRef({ lastSwitchAt: Date.now(), lowSamples: 0, highSamples: 0 });
   const directStallsRef = useRef([]);
   const wakeLockRef = useRef(null);
   const cueTimingsRef = useRef(new WeakMap());
@@ -157,9 +152,9 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
     const v = videoRef.current;
     if (!v) return;
     let cancelled = false;
-    let autoTimer;
     let retryTimer;
     let sessionStarted = false;
+    let playSessionId = null;
     const untrackFns = [];
 
     // Re-runs whenever the quality choice changes, too. The previous effect's
@@ -310,7 +305,6 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
 
     (async () => {
       let mode = fallbackMode();
-      let playSessionId = null;
       // Ask Jellyfin whether this browser can play the source as-is. Fixed
       // qualities avoid a needless transcode when the source already fits;
       // Auto does the same when measured headroom is generous, and falls back
@@ -373,6 +367,14 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
           lowLatencyMode: false,
           startLevel: -1,
           capLevelToPlayerSize: quality === "auto",
+          capLevelOnFPSDrop: quality === "auto",
+          // Seed HLS's estimator from the conservative connection profile
+          // chosen at startup. After the first fragments it continuously
+          // measures real throughput and switches variants inside this same
+          // MediaSource, without replacing the video or discarding its buffer.
+          ...(quality === "auto" && opt?.maxBitrate
+            ? { abrEwmaDefaultEstimate: Math.max(500_000, Math.floor(opt.maxBitrate * 0.7)) }
+            : {}),
           // Some servers reject the query-string api_key on HLS requests and
           // require the full Authorization header instead — hls.js can't rely
           // on <video src> query params, so we set it on every XHR it makes.
@@ -395,50 +397,6 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
           }));
         });
 
-        if (quality === "auto" && !isLiveTv(item)) {
-          const evaluateConnection = () => {
-            if (
-              cancelled ||
-              v.paused ||
-              v.seeking ||
-              v.readyState < 2 ||
-              document.pictureInPictureElement ||
-              v.webkitDisplayingFullscreen
-            ) return;
-
-            const now = Date.now();
-            const controller = autoControllerRef.current;
-            const bufferedEnd = v.buffered.length ? v.buffered.end(v.buffered.length - 1) : 0;
-            const bufferedAhead = Math.max(0, bufferedEnd - v.currentTime);
-            const bandwidth = hls.bandwidthEstimate;
-            const currentProfile = AUTO_QUALITY_OPTIONS.find((option) => option.key === autoQuality);
-
-            setStats((s) => ({
-              ...(s || {}),
-              bandwidthEstimate: bandwidth,
-              bufferedAhead,
-              autoProfile: currentProfile,
-            }));
-
-            if (!currentProfile || now - controller.lastSwitchAt < AUTO_SWITCH_COOLDOWN_MS) return;
-
-            const decision = evaluateAutoQuality({
-              currentKey: autoQuality,
-              bufferedAhead,
-              bandwidth,
-              lowSamples: controller.lowSamples,
-              highSamples: controller.highSamples,
-            });
-            controller.lowSamples = decision.lowSamples;
-            controller.highSamples = decision.highSamples;
-
-            if (decision.nextKey !== autoQuality) {
-              controller.lastSwitchAt = now;
-              setAutoQuality(decision.nextKey);
-            }
-          };
-          autoTimer = setInterval(evaluateConnection, AUTO_SWITCH_INTERVAL_MS);
-        }
         // Jellyfin's HLS master playlist carries every text subtitle and every
         // audio stream as alternate renditions — hls.js can swap between them
         // instantly, with no restart, exactly like the quality-independent
@@ -523,7 +481,6 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
         hlsRef.current = null;
       }
       untrackFns.forEach((fn) => fn());
-      clearInterval(autoTimer);
       clearTimeout(retryTimer);
       clearTimeout(reportTimer.current);
       v.removeEventListener("loadedmetadata", applyResumePosition);
@@ -700,8 +657,6 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
     clearTimeout(idleTimer.current);
     idleTimer.current = setTimeout(() => {
       setUiVisible(false);
-      setShowQuality(false);
-      setShowStats(false);
       setShowSpeed(false);
       setShowTracks(false);
     }, 3000);
@@ -716,6 +671,21 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
     wake();
     return () => clearTimeout(idleTimer.current);
   }, [playing, wake]);
+
+  // Stats and quality are reference panels rather than momentary controls.
+  // Keep either one open across the player's normal idle timeout, then close
+  // it only when the viewer clicks/taps outside that specific panel.
+  useEffect(() => {
+    if (!showStats && !showQuality) return undefined;
+    const openPanel = showStats ? "stats" : "quality";
+    const closeOnOutsidePress = (event) => {
+      if (event.target instanceof Element && event.target.closest(`[data-persistent-popover="${openPanel}"]`)) return;
+      setShowStats(false);
+      setShowQuality(false);
+    };
+    document.addEventListener("pointerdown", closeOnOutsidePress);
+    return () => document.removeEventListener("pointerdown", closeOnOutsidePress);
+  }, [showQuality, showStats]);
 
   /* --------------------------- report progress ----------------------------- */
 
@@ -1288,7 +1258,7 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
   return (
     <div
       ref={containerRef}
-      className={`player ${uiVisible ? "" : "player-idle"}`}
+      className={`player ${uiVisible ? "" : "player-idle"} ${showStats || showQuality ? "player-popover-pinned" : ""}`}
       role="dialog"
       aria-modal="true"
       aria-label={`Playing ${item?.Name || "media"}`}
@@ -1646,7 +1616,7 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
             )}
           </div>
 
-          <div className="player-popover-wrap player-stats-wrap">
+          <div className="player-popover-wrap player-stats-wrap player-persistent-popover" data-persistent-popover="stats">
             <button
               className={`player-btn ${showStats ? "on" : ""}`}
               onClick={() => {
@@ -1716,7 +1686,7 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
             )}
           </div>
 
-          <div className="player-popover-wrap">
+          <div className="player-popover-wrap player-persistent-popover" data-persistent-popover="quality">
             <button
               className={`player-btn ${showQuality ? "on" : ""}`}
               onClick={() => {
@@ -1743,11 +1713,6 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
                         setAutoQuality(initialAutoQuality());
                         setForceAdaptive(false);
                         directStallsRef.current = [];
-                        autoControllerRef.current = {
-                          lastSwitchAt: Date.now(),
-                          lowSamples: 0,
-                          highSamples: 0,
-                        };
                       }
                       setQuality(o.key);
                       savePrefs({ quality: o.key });

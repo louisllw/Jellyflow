@@ -3,6 +3,7 @@ import { useSession } from "../state/Session.jsx";
 import { Shelf, Loading, ErrorBox, itemProgress, ProgressRing } from "../components/Cards.jsx";
 import { IconFilm, IconTv, IconBroadcast, IconMusicNote } from "../components/Icons.jsx";
 import { fmtRuntimeTicks, looksPlayable } from "../api/utils.js";
+import { playActionLabel } from "../components/playbackState.js";
 
 const CATEGORIES = [
   { key: "Movies", label: "Movies", icon: IconFilm },
@@ -188,7 +189,7 @@ export function Home() {
                   <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
                     <path d="M8 5.5v13l11-6.5z" />
                   </svg>
-                  {hero.Type === "Series" ? "Continue the series" : "Play"}
+                  {playActionLabel(hero, { seriesLabel: "Continue the series" })}
                 </a>
               )}
               <a className="btn" href={`#/item/${hero.Id}`}>

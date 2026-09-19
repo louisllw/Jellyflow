@@ -13,30 +13,6 @@ export function initialAutoQuality(downlink = globalThis.navigator?.connection?.
   return "360";
 }
 
-export function evaluateAutoQuality({ currentKey, bufferedAhead, bandwidth, lowSamples, highSamples }) {
-  const currentIndex = AUTO_QUALITY_OPTIONS.findIndex((option) => option.key === currentKey);
-  const currentProfile = AUTO_QUALITY_OPTIONS[currentIndex];
-  const lowerProfile = AUTO_QUALITY_OPTIONS[currentIndex - 1];
-  const higherProfile = AUTO_QUALITY_OPTIONS[currentIndex + 1];
-  if (!currentProfile) return { nextKey: currentKey, lowSamples: 0, highSamples: 0 };
-
-  const shouldStepDown =
-    Boolean(lowerProfile) &&
-    (bufferedAhead < 4 ||
-      (Number.isFinite(bandwidth) && bandwidth < currentProfile.maxBitrate * 0.9));
-  const shouldStepUp =
-    Boolean(higherProfile) &&
-    bufferedAhead > 15 &&
-    Number.isFinite(bandwidth) &&
-    bandwidth > higherProfile.maxBitrate * 1.35;
-
-  const nextLowSamples = shouldStepDown ? lowSamples + 1 : 0;
-  const nextHighSamples = shouldStepUp ? highSamples + 1 : 0;
-  if (nextLowSamples >= 2) return { nextKey: lowerProfile.key, lowSamples: 0, highSamples: 0 };
-  if (nextHighSamples >= 3) return { nextKey: higherProfile.key, lowSamples: 0, highSamples: 0 };
-  return { nextKey: currentKey, lowSamples: nextLowSamples, highSamples: nextHighSamples };
-}
-
 export function lowerQualityKey(currentKey) {
   const index = AUTO_QUALITY_OPTIONS.findIndex((option) => option.key === currentKey);
   return index > 0 ? AUTO_QUALITY_OPTIONS[index - 1].key : AUTO_QUALITY_OPTIONS[0].key;

@@ -5,6 +5,7 @@ import { mediaAuthHeader } from "../api/jellyfin.js";
 import { fmtClock, isAudioOnly, isLiveTv, secondsToTicks, ticksToSeconds } from "../api/utils.js";
 import { IconBack, IconSettings, IconInfo } from "./Icons.jsx";
 import { combineHlsMasters } from "./adaptiveManifest.js";
+import { autoHlsConfig, connectionBandwidthEstimate, levelForBandwidth } from "./adaptivePlayback.js";
 import { findIntroSegment, transcodeReasons } from "./playbackMetadata.js";
 import {
   AUTO_CEILING_KEY,
@@ -414,14 +415,16 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
           enableWorker: true,
           lowLatencyMode: false,
           startLevel: -1,
-          capLevelToPlayerSize: quality === "auto",
           capLevelOnFPSDrop: quality === "auto",
           // Seed HLS's estimator from the conservative connection profile
           // chosen at startup. After the first fragments it continuously
           // measures real throughput and switches variants inside this same
           // MediaSource, without replacing the video or discarding its buffer.
-          ...(quality === "auto" && autoStartProfile?.maxBitrate
-            ? { abrEwmaDefaultEstimate: Math.max(500_000, Math.floor(autoStartProfile.maxBitrate * 0.7)) }
+          ...(quality === "auto"
+            ? autoHlsConfig(
+                connectionBandwidthEstimate(navigator.connection) ||
+                  Math.floor((autoStartProfile?.maxBitrate || 0) * 0.7),
+              )
             : {}),
           // Some servers reject the query-string api_key on HLS requests and
           // require the full Authorization header instead — hls.js can't rely
@@ -433,8 +436,17 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
         hlsRef.current = hls;
         hls.loadSource(url);
         hls.attachMedia(v);
+        const retuneFromConnection = () => {
+          if (quality !== "auto") return;
+          const estimate = connectionBandwidthEstimate(navigator.connection);
+          if (!estimate) return;
+          hls.bandwidthEstimate = estimate;
+          if (hls.levels?.length) hls.nextAutoLevel = levelForBandwidth(hls.levels, estimate);
+          setStats((s) => ({ ...(s || {}), bandwidthEstimate: estimate }));
+        };
         hls.on(Hls.Events.MANIFEST_PARSED, () => {
           setStats((s) => ({ ...(s || {}), availableLevels: hls.levels?.length || 0 }));
+          retuneFromConnection();
           resumeAndPlay();
         });
         hls.on(Hls.Events.LEVEL_SWITCHED, (_e, data) => {
@@ -469,6 +481,19 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
           setSubtitleTrack(preference === "off" ? -1 : (wanted?.id ?? hls.subtitleTrack));
         });
         hls.on(Hls.Events.SUBTITLE_TRACK_SWITCH, (_e, data) => setSubtitleTrack(data.id));
+        const connection = navigator.connection;
+        const resumeAfterNetworkReturn = () => {
+          retuneFromConnection();
+          hls.startLoad(-1);
+          if (!userPausedRef.current) v.play().catch(() => {});
+        };
+        const pauseLoadsWhileOffline = () => hls.stopLoad();
+        connection?.addEventListener?.("change", retuneFromConnection);
+        window.addEventListener("online", resumeAfterNetworkReturn);
+        window.addEventListener("offline", pauseLoadsWhileOffline);
+        untrackFns.push(() => connection?.removeEventListener?.("change", retuneFromConnection));
+        untrackFns.push(() => window.removeEventListener("online", resumeAfterNetworkReturn));
+        untrackFns.push(() => window.removeEventListener("offline", pauseLoadsWhileOffline));
         let networkRetries = 0;
         hls.on(Hls.Events.FRAG_LOADED, () => {
           networkRetries = 0;
@@ -839,6 +864,16 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
   const onVideoWaiting = () => {
     setBuffering(true);
     const v = videoRef.current;
+    if (quality === "auto" && stats?.playMethod === "Transcode (HLS)" && hlsRef.current && v?.currentTime > 0) {
+      const hls = hlsRef.current;
+      const lowest = hls.minAutoLevel;
+      const lowestBitrate = hls.levels?.[lowest]?.maxBitrate || hls.levels?.[lowest]?.bitrate || 500_000;
+      hls.stopLoad();
+      hls.bandwidthEstimate = Math.min(hls.bandwidthEstimate || Infinity, lowestBitrate * 1.15);
+      hls.nextAutoLevel = lowest;
+      hls.startLoad(-1);
+      return;
+    }
     if (quality !== "auto" || forceAdaptive || stats?.playMethod !== "Direct play" || !v || v.currentTime < 5) return;
     const now = Date.now();
     directStallsRef.current = [...directStallsRef.current.filter((time) => now - time < 60_000), now];

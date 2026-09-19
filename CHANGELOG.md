@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0-beta.7 (unreleased)
+
+Bug fixes:
+
+- The previous fix for iOS Safari pausing on its own when leaving native fullscreen didn't hold: it re-played once after a short guessed delay, but iOS's own pause could still land *after* that check and silently undo it a moment later (playback resumed for an instant, then stopped again). It now actively resists any non-user-initiated pause for a short window after leaving fullscreen, instead of checking once at a guessed time.
+
 ## 0.1.0-beta.6 — 2026-09-19
 
 Bug fixes:

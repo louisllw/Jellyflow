@@ -388,20 +388,29 @@ export function Player({ item, initialPosition = 0, onClose }) {
     const onVideoFsBegin = () => setIsFullscreen(true);
     const onVideoFsEnd = () => {
       setIsFullscreen(false);
-      // iOS Safari often pauses on its own when leaving native fullscreen,
-      // even when the user is just returning to inline playback rather than
-      // dismissing the video — resume unless the user themselves asked to
-      // pause. userPausedRef is intent (only set by the toggle/keyboard
-      // handlers), not "is currently paused" — the video's own paused state
-      // can't distinguish an OS-driven pause from the user's own, and an
-      // earlier version of this fix used a fixed delay to guess instead of
-      // checking that, which could still race a slow OS pause or override a
-      // pause the user made in that window. One rAF is enough to run after
-      // any same-tick native pause has already landed.
-      requestAnimationFrame(() => {
-        const v = videoRef.current;
-        if (v && v.paused && !userPausedRef.current) v.play().catch(() => {});
-      });
+      // iOS Safari can pause on its own when leaving native fullscreen, even
+      // when the user is just returning to inline playback rather than
+      // dismissing the video — and not necessarily right away: an earlier
+      // version of this fix waited a fixed delay (first 150ms, then a
+      // single animation frame) and re-played once, but iOS's own pause
+      // could still land *after* that check, silently undoing the resume a
+      // moment later (played for an instant, then stopped again). Instead
+      // of guessing when that pause happens, actively resist any pause for
+      // a short window after leaving fullscreen — except one the user asked
+      // for themselves (userPausedRef is intent, set only by the
+      // toggle/keyboard handlers, not by every pause event).
+      const fsv = videoRef.current;
+      if (!fsv) return;
+      let resisting = true;
+      const resist = () => {
+        if (resisting && !userPausedRef.current) fsv.play().catch(() => {});
+      };
+      fsv.addEventListener("pause", resist);
+      resist();
+      setTimeout(() => {
+        resisting = false;
+        fsv.removeEventListener("pause", resist);
+      }, 1000);
     };
     const onPipEnter = () => setIsPiP(true);
     const onPipLeave = () => setIsPiP(false);

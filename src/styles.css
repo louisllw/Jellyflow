@@ -2101,32 +2101,17 @@ img {
   pointer-events: none;
 }
 
-/* Stats and quality remain readable until explicitly dismissed. Restore the
-   bottom positioning context while idle, but keep every part of the normal
-   transport chrome hidden except the open reference panel. */
+/* Stats and quality are persistent reference panels. Keep their complete
+   bottom control bar visible as an anchor until the panel is dismissed;
+   ordinary playback still uses the normal idle auto-hide behaviour. */
+.player-idle.player-popover-pinned {
+  cursor: default;
+}
+
 .player-idle.player-popover-pinned .player-bottom {
   opacity: 1;
   transform: none;
-  pointer-events: none;
-  background: transparent;
-}
-
-.player-idle.player-popover-pinned .player-track,
-.player-idle.player-popover-pinned .player-primary-controls,
-.player-idle.player-popover-pinned .player-time,
-.player-idle.player-popover-pinned .player-title,
-.player-idle.player-popover-pinned .player-secondary-controls > :not(.player-persistent-popover) {
-  opacity: 0;
-  pointer-events: none;
-}
-
-.player-idle.player-popover-pinned .player-persistent-popover {
   pointer-events: auto;
-}
-
-.player-idle.player-popover-pinned .player-persistent-popover > .player-btn {
-  opacity: 0;
-  pointer-events: none;
 }
 
 .player-video {

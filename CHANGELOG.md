@@ -11,6 +11,7 @@ Bug fixes and refinements:
 - Removed dead API client methods that pointed at non-existent Jellyfin endpoints (`/NextUp`, `/LatestMedia`).
 - Hardened the session layer: the saved session no longer mutates React state in place, and saving it no longer throws when browser storage is unavailable.
 - Smoother player: progress UI re-renders are limited to displayed-second changes while playing.
+- `JELLYFIN_URL` now pins a deployment to that server: the login page only asks for credentials, stale sessions for another server are ignored, and server switching is hidden.
 
 ## 0.1.0-beta.1 — 2026-09-19
 

@@ -19,7 +19,7 @@ import { Connect, SessionLost } from "./pages/Connect.jsx";
  * host, behind any reverse proxy, with no URL-rewrite rules.
  */
 function App() {
-  const { ready, booting, authError, disconnect, cfg, connect } = useSession();
+  const { ready, booting, authError, disconnect, cfg, configuredServer } = useSession();
 
   if (booting) {
     return (
@@ -47,12 +47,10 @@ function App() {
   }
 
   if (!ready) {
-    // Prefill the server field, in order of preference:
-    //   1. ?server=... in the URL (share a pre-filled link)
-    //   2. JELLYFIN_URL baked in at container start (docker-compose.yml)
-    //   3. the last server you actually signed into on this device
+    // A runtime-configured server is authoritative. Otherwise, prefill from a
+    // shared link or the last server used by this browser.
     const params = new URLSearchParams(window.location.search);
-    const prefill = params.get("server") || window.JELLYFIN_SERVER_URL || cfg?.serverUrl || loadLastServer();
+    const prefill = configuredServer || params.get("server") || cfg?.serverUrl || loadLastServer();
     return (
       <HashRouter>
         <Connect prefill={prefill} />

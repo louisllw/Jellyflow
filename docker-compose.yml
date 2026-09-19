@@ -2,9 +2,9 @@
 #
 #   docker compose up -d
 #
-# then open http://localhost:8080 and point it at your Jellyfin server.
+# then open http://localhost:8080 and sign in to your Jellyfin server.
 #
-# To pre-fill the server address on first load, set JELLYFIN_URL:
+# To pin this deployment to one server, set JELLYFIN_URL:
 #
 #   JELLYFIN_URL=https://jellyfin.example.org docker compose up -d
 

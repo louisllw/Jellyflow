@@ -30,7 +30,7 @@ docker run -d \
   ghcr.io/louisllw/jellyflow:latest
 ```
 
-Open <http://localhost:8080>. `JELLYFIN_URL` only prefills the connect screen and may be omitted; no Jellyfin hostname is hard-coded into the image.
+Open <http://localhost:8080>. When set, `JELLYFIN_URL` pins that deployment to the specified server, so users only enter their credentials. Omit it to let users choose a server on the connect screen; no Jellyfin hostname is hard-coded into the image.
 
 Or use the included Compose file:
 

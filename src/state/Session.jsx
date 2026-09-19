@@ -7,6 +7,7 @@ import {
   loadConfig,
   login,
   normalizeServerUrl,
+  runtimeServerUrl,
   saveConfig,
   saveLastServer,
 } from "../api/jellyfin.js";
@@ -14,7 +15,12 @@ import {
 const Ctx = createContext(null);
 
 export function SessionProvider({ children }) {
-  const [cfg, setCfg] = useState(() => loadConfig());
+  const [configuredServer] = useState(() => runtimeServerUrl());
+  const [cfg, setCfg] = useState(() => {
+    const saved = loadConfig();
+    if (configuredServer && normalizeServerUrl(saved?.serverUrl) !== configuredServer) return null;
+    return saved;
+  });
   const [user, setUser] = useState(null);
   const [booting, setBooting] = useState(Boolean(cfg));
   const [authError, setAuthError] = useState(null);
@@ -23,7 +29,7 @@ export function SessionProvider({ children }) {
   const ready = Boolean(cfg && !booting);
 
   const connect = useCallback(async (serverUrl, username, password) => {
-    const base = normalizeServerUrl(serverUrl);
+    const base = configuredServer || normalizeServerUrl(serverUrl);
     const { user: u, token } = await login(base, username.trim(), password);
     const newCfg = {
       serverUrl: base,
@@ -39,18 +45,18 @@ export function SessionProvider({ children }) {
     setUser(u);
     setAuthError(null);
     return u;
-  }, []);
+  }, [configuredServer]);
 
   // Step 1 of API-key sign-in: validate the key and hand back the server's
   // user list so the UI can ask which profile to act as.
   const listApiKeyUsers = useCallback(async (serverUrl, apiKey) => {
-    const base = normalizeServerUrl(serverUrl);
+    const base = configuredServer || normalizeServerUrl(serverUrl);
     return listUsersWithApiKey(base, apiKey.trim());
-  }, []);
+  }, [configuredServer]);
 
   // Step 2: finish connecting once a profile has been picked.
   const connectWithApiKey = useCallback(async (serverUrl, apiKey, user) => {
-    const base = normalizeServerUrl(serverUrl);
+    const base = configuredServer || normalizeServerUrl(serverUrl);
     const newCfg = {
       serverUrl: base,
       username: user.Name,
@@ -66,7 +72,7 @@ export function SessionProvider({ children }) {
     setUser(user);
     setAuthError(null);
     return user;
-  }, []);
+  }, [configuredServer]);
 
   const disconnect = useCallback(() => {
     clearConfig();
@@ -121,12 +127,13 @@ export function SessionProvider({ children }) {
       ready,
       booting,
       authError,
+      configuredServer,
       connect,
       connectWithApiKey,
       listApiKeyUsers,
       disconnect,
     }),
-    [cfg, user, ready, booting, authError, connect, connectWithApiKey, listApiKeyUsers, disconnect],
+    [cfg, user, ready, booting, authError, configuredServer, connect, connectWithApiKey, listApiKeyUsers, disconnect],
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

@@ -6,10 +6,10 @@ import { hostOf } from "../api/jellyfin.js";
  * Settings — the only place the app talks about itself.
  *
  * Who you're signed in as, which server you're pointed at, and the escape
- * hatches: switch server, or sign out cleanly.
+ * hatches: switch server when the deployment allows it, or sign out cleanly.
  */
 export function Settings() {
-  const { cfg, user, disconnect, connect } = useSession();
+  const { cfg, user, disconnect, connect, configuredServer } = useSession();
   const [showForm, setShowForm] = useState(false);
   const [server, setServer] = useState(cfg?.serverUrl || "");
   const [username, setUsername] = useState("");
@@ -53,7 +53,9 @@ export function Settings() {
           </div>
         </dl>
 
-        {showForm && (
+        {configuredServer && <p className="settings-fixed-server">Fixed by this Jellyflow deployment.</p>}
+
+        {!configuredServer && showForm && (
           <form onSubmit={submit} className="settings-form">
             <div className="field">
               <label>Server address</label>
@@ -84,9 +86,11 @@ export function Settings() {
         )}
 
         <div className="settings-actions">
-          <button className="btn" onClick={() => setShowForm((s) => !s)}>
-            {showForm ? "Close form" : "Connect to a different server"}
-          </button>
+          {!configuredServer && (
+            <button className="btn" onClick={() => setShowForm((s) => !s)}>
+              {showForm ? "Close form" : "Connect to a different server"}
+            </button>
+          )}
           <button
             className="btn"
             onClick={() => {
@@ -101,7 +105,7 @@ export function Settings() {
 
         <p className="settings-privacy">
           Your credentials are stored only in this browser (localStorage) and are never sent anywhere except the
-          Jellyfin server you named. Sign out to erase them.
+          configured Jellyfin server. Sign out to erase them.
         </p>
       </div>
     </>

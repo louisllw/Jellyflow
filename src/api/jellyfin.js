@@ -70,6 +70,11 @@ export function normalizeServerUrl(input) {
   return url;
 }
 
+export function runtimeServerUrl() {
+  if (typeof window === "undefined") return "";
+  return normalizeServerUrl(window.JELLYFIN_SERVER_URL || "");
+}
+
 export function hostOf(url) {
   try {
     return new URL(url).host;

@@ -1,15 +1,15 @@
 import { useState } from "react";
 import { useSession } from "../state/Session.jsx";
-import { userAvatarUrl } from "../api/jellyfin.js";
+import { hostOf, userAvatarUrl } from "../api/jellyfin.js";
 
 /**
- * The front door. Anyone running this image lands here and points it at
- * their own Jellyfin server — no build step, no config file.
+ * The front door. A deployment may pin one Jellyfin server at runtime;
+ * otherwise the person signing in chooses their server here.
  */
 export function Connect({ prefill, existingError }) {
-  const { connect, connectWithApiKey, listApiKeyUsers } = useSession();
+  const { connect, connectWithApiKey, listApiKeyUsers, configuredServer } = useSession();
   const [mode, setMode] = useState("password"); // "password" | "apikey"
-  const [server, setServer] = useState(prefill || "");
+  const [server, setServer] = useState(configuredServer || prefill || "");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [apiKey, setApiKey] = useState("");
@@ -142,19 +142,27 @@ export function Connect({ prefill, existingError }) {
           </button>
         </div>
 
-        <div className="field">
-          <label htmlFor="cf-server">Server address</label>
-          <input
-            id="cf-server"
-            type="text"
-            inputMode="url"
-            autoComplete="url"
-            placeholder="https://jellyfin.example.org"
-            value={server}
-            onChange={(e) => setServer(e.target.value)}
-            required
-          />
-        </div>
+        {configuredServer ? (
+          <div className="connect-fixed-server">
+            <span>Server</span>
+            <strong>{hostOf(configuredServer)}</strong>
+            <small>Configured by this Jellyflow instance</small>
+          </div>
+        ) : (
+          <div className="field">
+            <label htmlFor="cf-server">Server address</label>
+            <input
+              id="cf-server"
+              type="text"
+              inputMode="url"
+              autoComplete="url"
+              placeholder="https://jellyfin.example.org"
+              value={server}
+              onChange={(e) => setServer(e.target.value)}
+              required
+            />
+          </div>
+        )}
 
         {mode === "password" ? (
           <>

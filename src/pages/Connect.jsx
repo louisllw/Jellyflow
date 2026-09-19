@@ -1,14 +1,20 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useSession } from "../state/Session.jsx";
-import { hostOf, userAvatarUrl } from "../api/jellyfin.js";
+import {
+  hostOf,
+  initiateQuickConnect,
+  quickConnectAvailable,
+  quickConnectStatus,
+  userAvatarUrl,
+} from "../api/jellyfin.js";
 
 /**
  * The front door. A deployment may pin one Jellyfin server at runtime;
  * otherwise the person signing in chooses their server here.
  */
 export function Connect({ prefill, existingError }) {
-  const { connect, connectWithApiKey, listApiKeyUsers, configuredServer, configuredServerName } = useSession();
-  const [mode, setMode] = useState("password"); // "password" | "apikey"
+  const { connect, connectWithApiKey, connectWithQuickConnect, listApiKeyUsers, configuredServer, configuredServerName } = useSession();
+  const [mode, setMode] = useState("password"); // "password" | "quick" | "apikey"
   const [server, setServer] = useState(configuredServer || prefill || "");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -16,6 +22,50 @@ export function Connect({ prefill, existingError }) {
   const [profiles, setProfiles] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(existingError || null);
+  const [quickRequest, setQuickRequest] = useState(null);
+
+  useEffect(() => {
+    if (!quickRequest?.Secret) return undefined;
+    let alive = true;
+    let timer;
+    const poll = async () => {
+      try {
+        const status = await quickConnectStatus(configuredServer || server, quickRequest.Secret);
+        if (!alive) return;
+        if (status?.Authenticated) {
+          setBusy(true);
+          await connectWithQuickConnect(configuredServer || server, quickRequest.Secret);
+          return;
+        }
+        timer = window.setTimeout(poll, 2_000);
+      } catch (err) {
+        if (alive) {
+          setError(err.message || "Quick Connect stopped responding.");
+          setBusy(false);
+        }
+      }
+    };
+    timer = window.setTimeout(poll, 1_500);
+    return () => {
+      alive = false;
+      window.clearTimeout(timer);
+    };
+  }, [configuredServer, connectWithQuickConnect, quickRequest, server]);
+
+  const startQuickConnect = async () => {
+    const base = configuredServer || server;
+    setBusy(true);
+    setError(null);
+    setQuickRequest(null);
+    try {
+      if (!(await quickConnectAvailable(base))) throw new Error("Quick Connect is not enabled on this Jellyfin server.");
+      setQuickRequest(await initiateQuickConnect(base));
+    } catch (err) {
+      setError(err.message || "Quick Connect could not be started.");
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const submitPassword = async (e) => {
     e.preventDefault();
@@ -99,7 +149,7 @@ export function Connect({ prefill, existingError }) {
     <div className="connect">
       <form
         className="connect-card reveal"
-        onSubmit={mode === "password" ? submitPassword : submitApiKey}
+        onSubmit={mode === "password" ? submitPassword : mode === "apikey" ? submitApiKey : (event) => event.preventDefault()}
       >
         <div className="connect-brand" aria-label="Jellyflow">
           <div className="connect-mark" aria-hidden />
@@ -127,6 +177,19 @@ export function Connect({ prefill, existingError }) {
             }}
           >
             Username &amp; password
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={mode === "quick"}
+            className={mode === "quick" ? "active" : ""}
+            onClick={() => {
+              setMode("quick");
+              setError(null);
+              setQuickRequest(null);
+            }}
+          >
+            Quick Connect
           </button>
           <button
             type="button"
@@ -192,7 +255,7 @@ export function Connect({ prefill, existingError }) {
               />
             </div>
           </>
-        ) : (
+        ) : mode === "apikey" ? (
           <div className="field">
             <label htmlFor="cf-apikey">API key</label>
             <input
@@ -205,6 +268,24 @@ export function Connect({ prefill, existingError }) {
               required
             />
           </div>
+        ) : (
+          <div className="connect-quick" aria-live="polite">
+            {quickRequest ? (
+              <>
+                <span>Enter this code in Jellyfin</span>
+                <strong>{quickRequest.Code}</strong>
+                <small>Dashboard or profile menu → Quick Connect</small>
+                <button className="btn" type="button" onClick={startQuickConnect}>Request a new code</button>
+              </>
+            ) : (
+              <>
+                <p>Authorise this browser from any device already signed in to your Jellyfin server.</p>
+                <button className="btn" type="button" onClick={startQuickConnect} disabled={busy || !(configuredServer || server)}>
+                  {busy ? "Requesting…" : "Get a Quick Connect code"}
+                </button>
+              </>
+            )}
+          </div>
         )}
 
         {error && (
@@ -213,9 +294,11 @@ export function Connect({ prefill, existingError }) {
           </div>
         )}
 
-        <button className="btn btn-primary" type="submit" disabled={busy} style={{ width: "100%", justifyContent: "center" }}>
-          {busy ? "Connecting…" : mode === "password" ? "Open the doors" : "Continue"}
-        </button>
+        {mode !== "quick" && (
+          <button className="btn btn-primary" type="submit" disabled={busy} style={{ width: "100%", justifyContent: "center" }}>
+            {busy ? "Connecting…" : mode === "password" ? "Open the doors" : "Continue"}
+          </button>
+        )}
 
         <div className="connect-foot">
           <span style={{ color: "var(--ink-dim)" }}>Jellyflow keeps no accounts or database.</span> Your

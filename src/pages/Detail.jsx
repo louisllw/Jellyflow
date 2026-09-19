@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useSession } from "../state/Session.jsx";
-import { Loading, ErrorBox } from "../components/Cards.jsx";
+import { Loading, ErrorBox, Shelf } from "../components/Cards.jsx";
 import { Player } from "../components/Player.jsx";
 import { fmtRuntimeTicks, ticksToSeconds, typeLabel, looksPlayable, isLiveTv } from "../api/utils.js";
 import { isPlaybackComplete, playActionLabel, playbackExitPath } from "../components/playbackState.js";
@@ -28,6 +28,16 @@ export function Detail() {
   const [seasonErrors, setSeasonErrors] = useState({});
   const [activeSeasonId, setActiveSeasonId] = useState("");
   const [tick, setTick] = useState(0);
+  const [related, setRelated] = useState([]);
+  const [extras, setExtras] = useState([]);
+  const [themeSongs, setThemeSongs] = useState([]);
+  const [additionalParts, setAdditionalParts] = useState([]);
+  const [lyrics, setLyrics] = useState(null);
+  const [mediaQueue, setMediaQueue] = useState([]);
+  const [mixBusy, setMixBusy] = useState(false);
+  const [playlists, setPlaylists] = useState([]);
+  const [playlistItems, setPlaylistItems] = useState([]);
+  const [playlistNotice, setPlaylistNotice] = useState("");
   const autoplayed = useRef(false);
   const retry = () => setTick((t) => t + 1);
 
@@ -42,12 +52,42 @@ export function Detail() {
     setActiveSeasonId("");
     setError(null);
     setPlaying(null);
+    setRelated([]);
+    setExtras([]);
+    setThemeSongs([]);
+    setAdditionalParts([]);
+    setLyrics(null);
+    setMediaQueue([]);
+    setPlaylists([]);
+    setPlaylistItems([]);
+    setPlaylistNotice("");
     autoplayed.current = false;
     (async () => {
       try {
         const it = await client.item(id);
         if (!alive) return;
         setItem(it);
+        const [similarResult, featuresResult, trailersResult, themesResult, partsResult, lyricsResult, playlistsResult, playlistItemsResult] = await Promise.allSettled([
+          client.similarItems(it.Id),
+          client.specialFeatures(it.Id),
+          client.localTrailers(it.Id),
+          client.themeMedia(it.Id),
+          looksPlayable(it) && it.Type !== "Audio" ? client.additionalParts(it.Id) : Promise.resolve({ Items: [] }),
+          it.Type === "Audio" ? client.lyrics(it.Id) : Promise.resolve(null),
+          client.playlists(),
+          it.Type === "Playlist" ? client.playlistItems(it.Id) : Promise.resolve({ Items: [] }),
+        ]);
+        if (!alive) return;
+        if (similarResult.status === "fulfilled") setRelated(similarResult.value?.Items || []);
+        const features = featuresResult.status === "fulfilled" ? featuresResult.value || [] : [];
+        const trailers = trailersResult.status === "fulfilled" ? trailersResult.value || [] : [];
+        const themes = themesResult.status === "fulfilled" ? themesResult.value : { songs: [], videos: [] };
+        setExtras([...features, ...trailers, ...(themes?.videos || [])]);
+        setThemeSongs(themes?.songs || []);
+        if (partsResult.status === "fulfilled") setAdditionalParts(partsResult.value?.Items || []);
+        if (lyricsResult.status === "fulfilled") setLyrics(lyricsResult.value);
+        if (playlistsResult.status === "fulfilled") setPlaylists(playlistsResult.value?.Items || []);
+        if (playlistItemsResult.status === "fulfilled") setPlaylistItems(playlistItemsResult.value?.Items || []);
         const seriesId = it?.Type === "Series" ? it.Id : it?.SeriesId;
         if (seriesId) {
           const [s, allEpisodes, parent] = await Promise.all([
@@ -106,6 +146,7 @@ export function Detail() {
   const playable = looksPlayable(item);
   const isSeries = item?.Type === "Series";
   const isEpisode = item?.Type === "Episode";
+  const isPlaylist = item?.Type === "Playlist";
 
   const play = useCallback(async () => {
     if (playable) {
@@ -125,18 +166,26 @@ export function Detail() {
         setError(e);
       }
     }
-  }, [client, isSeries, item, playable]);
+    if (isPlaylist && playlistItems.length) {
+      setMediaQueue(playlistItems);
+      try {
+        setPlaying(await client.item(playlistItems[0].Id));
+      } catch (e) {
+        setError(e);
+      }
+    }
+  }, [client, isPlaylist, isSeries, item, playable, playlistItems]);
 
   // A "Play" tap from elsewhere (e.g. the Home hero) can jump straight into
   // playback via ?play=1 instead of landing on this page inert. Keep this as
   // an effect: starting playback and setting state during render was prone to
   // duplicate work under React Strict Mode.
   useEffect(() => {
-    if ((playable || isSeries) && params.get("play") === "1" && !autoplayed.current && !playing) {
+    if ((playable || isSeries || (isPlaylist && playlistItems.length)) && params.get("play") === "1" && !autoplayed.current && !playing) {
       autoplayed.current = true;
       play();
     }
-  }, [isSeries, params, play, playable, playing]);
+  }, [isPlaylist, isSeries, params, play, playable, playing, playlistItems.length]);
 
   if (error) return <ErrorBox error={error} onRetry={retry} />;
   if (!item) return <Loading label="Opening the archive" />;
@@ -169,8 +218,6 @@ export function Detail() {
     .filter(Boolean)
     .join("  ·  ");
 
-  const queueIndex = episodeQueue.findIndex((episode) => episode.Id === (playing?.Id || item.Id));
-  const nextEpisode = queueIndex >= 0 ? episodeQueue[queueIndex + 1] || null : null;
   const currentEpisodeIndex = episodeQueue.findIndex((episode) => episode.Id === item.Id);
   const previousEpisode = currentEpisodeIndex > 0 ? episodeQueue[currentEpisodeIndex - 1] : null;
   const detailNextEpisode = currentEpisodeIndex >= 0 ? episodeQueue[currentEpisodeIndex + 1] || null : null;
@@ -182,13 +229,60 @@ export function Detail() {
   const videoStream = mediaStreams.find((stream) => stream.Type === "Video");
   const audioStream = mediaStreams.find((stream) => stream.Type === "Audio");
 
+  const itemParts = [item, ...additionalParts.filter((part) => part.Id !== item.Id)];
+  const activeQueue = playing?.Type === "Episode"
+    ? episodeQueue
+    : mediaQueue.length
+      ? mediaQueue
+      : itemParts;
+  const activeQueueIndex = activeQueue.findIndex((entry) => entry.Id === (playing?.Id || item.Id));
+  const queuedNextItem = activeQueueIndex >= 0 ? activeQueue[activeQueueIndex + 1] || null : null;
+
   const playNext = async () => {
-    if (!nextEpisode) return;
+    if (!queuedNextItem) return;
     try {
-      const fullEpisode = await client.item(nextEpisode.Id);
+      const fullEpisode = await client.item(queuedNextItem.Id);
       setPlaying(fullEpisode);
     } catch (e) {
       setError(e);
+    }
+  };
+
+  const playInstantMix = async () => {
+    setMixBusy(true);
+    try {
+      const result = await client.instantMix(item.Id);
+      const queue = result?.Items || [];
+      if (queue.length) {
+        setMediaQueue(queue);
+        setPlaying(await client.item(queue[0].Id));
+      }
+    } catch (e) {
+      setError(e);
+    } finally {
+      setMixBusy(false);
+    }
+  };
+
+  const addToPlaylist = async (playlist) => {
+    try {
+      await client.addPlaylistItems(playlist.Id, [item.Id]);
+      setPlaylistNotice(`Added to ${playlist.Name}`);
+    } catch (e) {
+      setPlaylistNotice(e.message || "This item could not be added.");
+    }
+  };
+
+  const createPlaylist = async () => {
+    const name = window.prompt("Name this playlist");
+    if (!name?.trim()) return;
+    try {
+      await client.createPlaylist(name.trim(), [item.Id]);
+      setPlaylistNotice(`Created ${name.trim()}`);
+      const result = await client.playlists();
+      setPlaylists(result?.Items || []);
+    } catch (e) {
+      setPlaylistNotice(e.message || "The playlist could not be created.");
     }
   };
 
@@ -212,7 +306,7 @@ export function Detail() {
           </div>
           <h1 className="detail-title">{item.Name}</h1>
           {sub && <div className="detail-sub">{sub}</div>}
-          {(playable || isSeries) && (
+          {(playable || isSeries || (isPlaylist && playlistItems.length)) && (
             <div className="hero-actions" style={{ marginTop: 22 }}>
               <button className="btn btn-primary btn-play" onClick={play}>
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
@@ -220,6 +314,22 @@ export function Detail() {
                 </svg>
                 {playActionLabel(item, { resumePosition })}
               </button>
+              {item.Type === "Audio" && (
+                <button className="btn" onClick={playInstantMix} disabled={mixBusy}>
+                  {mixBusy ? "Building mix…" : "Instant mix"}
+                </button>
+              )}
+              {playable && (
+                <details className="playlist-picker">
+                  <summary className="btn">Add to playlist</summary>
+                  <div>
+                    {playlists.map((playlist) => (
+                      <button key={playlist.Id} onClick={() => addToPlaylist(playlist)}>{playlist.Name}</button>
+                    ))}
+                    <button onClick={createPlaylist}>＋ New playlist</button>
+                  </div>
+                </details>
+              )}
               {isEpisode && previousEpisode && (
                 <Link className="btn detail-episode-action" to={`/item/${previousEpisode.Id}`}>
                   Previous episode
@@ -234,6 +344,12 @@ export function Detail() {
           )}
         </div>
       </section>
+
+      {playlistNotice && (
+        <button className="live-notice" onClick={() => setPlaylistNotice("")} aria-label="Dismiss message">
+          {playlistNotice}
+        </button>
+      )}
 
       {isEpisode && seriesParent && (
         <nav className="series-path reveal" aria-label="Series navigation">
@@ -329,6 +445,34 @@ export function Detail() {
         )}
       </div>
 
+      {additionalParts.length > 0 && (
+        <Shelf title="More parts" items={additionalParts} client={client} empty="" />
+      )}
+
+      {isPlaylist && playlistItems.length > 0 && (
+        <Shelf title="Playlist" items={playlistItems} client={client} empty="" />
+      )}
+
+      {extras.length > 0 && (
+        <Shelf title="Trailers & extras" items={extras} client={client} empty="" />
+      )}
+
+      {themeSongs.length > 0 && (
+        <Shelf title="Theme music" items={themeSongs} client={client} empty="" />
+      )}
+
+      {lyrics?.Lyrics?.length > 0 && (
+        <section className="detail-lyrics" aria-labelledby="lyrics-title">
+          <div className="page-eyebrow">From your server</div>
+          <h2 id="lyrics-title">Lyrics</h2>
+          <div>{lyrics.Lyrics.map((line, index) => <p key={`${line.Start ?? "line"}-${index}`}>{line.Text}</p>)}</div>
+        </section>
+      )}
+
+      {related.length > 0 && (
+        <Shelf title="More like this" items={related} client={client} empty="" />
+      )}
+
       {/* seasons & episodes for series */}
       {isSeries && seasons?.length > 0 && (
         <section className="seasons" aria-label="Seasons and episodes">
@@ -393,7 +537,7 @@ export function Detail() {
         <Player
           key={playing.Id}
           item={playing}
-          nextItem={nextEpisode}
+          nextItem={queuedNextItem}
           onPlayNext={playNext}
           // A series autoplays one of *its* episodes, so resume from that
           // episode's own position, not the series' (nonexistent) one.

@@ -6,6 +6,7 @@ import {
   listUsersWithApiKey,
   loadConfig,
   login,
+  loginWithQuickConnect,
   normalizeServerUrl,
   runtimeServerName,
   runtimeServerUrl,
@@ -44,6 +45,30 @@ export function SessionProvider({ children }) {
     saveConfig(newCfg);
     saveLastServer(base);
     clientRef.current = new Jellyfin(newCfg);
+    clientRef.current.registerCapabilities();
+    clientRef.current.connectSocket();
+    setCfg(newCfg);
+    setUser(u);
+    setAuthError(null);
+    return u;
+  }, [configuredServer, configuredServerName]);
+
+  const connectWithQuickConnect = useCallback(async (serverUrl, secret) => {
+    const base = configuredServer || normalizeServerUrl(serverUrl);
+    const { user: u, token } = await loginWithQuickConnect(base, secret);
+    const newCfg = {
+      serverUrl: base,
+      serverName: configuredServerName || undefined,
+      username: u.Username,
+      userId: u.Id,
+      token,
+      name: u.Name,
+    };
+    saveConfig(newCfg);
+    saveLastServer(base);
+    clientRef.current = new Jellyfin(newCfg);
+    clientRef.current.registerCapabilities();
+    clientRef.current.connectSocket();
     setCfg(newCfg);
     setUser(u);
     setAuthError(null);
@@ -72,6 +97,8 @@ export function SessionProvider({ children }) {
     saveConfig(newCfg);
     saveLastServer(base);
     clientRef.current = new Jellyfin(newCfg);
+    clientRef.current.registerCapabilities();
+    clientRef.current.connectSocket();
     setCfg(newCfg);
     setUser(user);
     setAuthError(null);
@@ -79,6 +106,7 @@ export function SessionProvider({ children }) {
   }, [configuredServer, configuredServerName]);
 
   const disconnect = useCallback(() => {
+    clientRef.current?.disconnectSocket();
     clearConfig();
     clientRef.current = null;
     setCfg(null);
@@ -99,6 +127,8 @@ export function SessionProvider({ children }) {
         const u = await clientRef.current.me();
         if (!alive) return;
         setUser(u);
+        clientRef.current.registerCapabilities();
+        clientRef.current.connectSocket();
         // Replace, don't mutate: cfg lives in state, and mutating it in place
         // would skip re-renders for anything keyed on the object's identity.
         if (u && u.Policy) setCfg((c) => (c ? { ...c, Policy: u.Policy } : c));
@@ -117,11 +147,22 @@ export function SessionProvider({ children }) {
     })();
     return () => {
       alive = false;
+      clientRef.current?.disconnectSocket();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const client = clientRef.current;
+
+  useEffect(() => {
+    if (!client) return undefined;
+    return client.onSocketMessage((message) => {
+      if (message?.MessageType !== "SyncPlayGroupUpdate" || message.Data?.Type !== "PlayQueue") return;
+      const first = message.Data?.Data?.Playlist?.[0];
+      if (!first?.ItemId || window.location.hash.includes(`/item/${first.ItemId}`)) return;
+      window.location.hash = `#/item/${encodeURIComponent(first.ItemId)}?play=1&sync=1`;
+    });
+  }, [client]);
 
   const value = useMemo(
     () => ({
@@ -134,11 +175,12 @@ export function SessionProvider({ children }) {
       configuredServer,
       configuredServerName,
       connect,
+      connectWithQuickConnect,
       connectWithApiKey,
       listApiKeyUsers,
       disconnect,
     }),
-    [cfg, user, ready, booting, authError, configuredServer, configuredServerName, connect, connectWithApiKey, listApiKeyUsers, disconnect],
+    [cfg, user, ready, booting, authError, configuredServer, configuredServerName, connect, connectWithApiKey, connectWithQuickConnect, listApiKeyUsers, disconnect],
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

@@ -6,7 +6,7 @@ import { fmtClock, isAudioOnly, isLiveTv, secondsToTicks, ticksToSeconds } from 
 import { IconBack, IconSettings, IconInfo } from "./Icons.jsx";
 import { combineHlsMasters } from "./adaptiveManifest.js";
 import { autoHlsConfig, connectionBandwidthEstimate, levelForBandwidth } from "./adaptivePlayback.js";
-import { findIntroSegment, transcodeReasons } from "./playbackMetadata.js";
+import { findSkippableSegment, transcodeReasons } from "./playbackMetadata.js";
 import {
   AUTO_CEILING_KEY,
   AUTO_QUALITY_OPTIONS,
@@ -78,6 +78,11 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
   const statsTimer = useRef(null);
   const idleTimer = useRef(null);
   const playSessionIdRef = useRef(null);
+  const playMethodRef = useRef("Transcode");
+  const liveStreamIdRef = useRef(null);
+  const serverBandwidthRef = useRef(null);
+  const syncQueueAnnouncedRef = useRef(false);
+  const syncReadyRef = useRef(false);
   const directStallsRef = useRef([]);
   const wakeLockRef = useRef(null);
   const cueTimingsRef = useRef(new WeakMap());
@@ -163,6 +168,8 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
     let retryTimer;
     let sessionStarted = false;
     let playSessionId = null;
+    let liveStreamId = null;
+    let negotiatedTranscodingUrl = "";
     let adaptiveManifestUrl = null;
     let playbackReason = "";
     const untrackFns = [];
@@ -316,6 +323,20 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
 
     (async () => {
       let mode = fallbackMode();
+      let measuredBandwidth = serverBandwidthRef.current;
+      if (quality === "auto" && !measuredBandwidth) {
+        try {
+          measuredBandwidth = await client.measureBitrate();
+          serverBandwidthRef.current = measuredBandwidth;
+        } catch {
+          // Fragment timings and the browser connection estimate still provide
+          // a safe fallback when an older server lacks BitrateTest.
+        }
+        if (cancelled) return;
+      }
+      const measuredStartProfile = qualityProfile(
+        measuredBandwidth ? initialAutoQuality(measuredBandwidth / 1_000_000) : autoQuality,
+      ) || autoStartProfile;
       // Ask Jellyfin whether this browser can play the source as-is. Fixed
       // qualities avoid a needless transcode when the source already fits;
       // Auto does the same when measured headroom is generous, and falls back
@@ -328,6 +349,9 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
         });
         if (cancelled) return;
         playSessionId = info.playSessionId;
+        liveStreamId = info.liveStreamId;
+        negotiatedTranscodingUrl = info.transcodingUrl || "";
+        liveStreamIdRef.current = liveStreamId;
         // Original remains the explicit no-transcode choice. Fixed qualities
         // may direct-play when the source fits their limit; Auto only does so
         // with ample headroom and can promote itself to adaptive HLS on stalls.
@@ -337,8 +361,8 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
           quality === "auto" &&
           !forceAdaptive &&
           sourceBitrate > 0 &&
-          sourceFitsProfile(playbackSource, autoStartProfile) &&
-          sourceBitrate <= (autoStartProfile?.maxBitrate || 0) * 0.7;
+          sourceFitsProfile(playbackSource, measuredStartProfile) &&
+          sourceBitrate <= (measuredStartProfile?.maxBitrate || 0) * 0.7;
         const fixedDirectPlayFits = quality !== "auto" && sourceFitsProfile(playbackSource, opt);
         if (info.source?.SupportsDirectPlay && (autoDirectPlayFits || fixedDirectPlayFits)) mode = "direct";
         const reasons = transcodeReasons(playbackSource);
@@ -349,12 +373,22 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
       playSessionIdRef.current = playSessionId;
 
       const playMethod = mode === "direct" ? "DirectPlay" : "Transcode";
+      playMethodRef.current = playMethod;
       client.startPlayback(item, {
         mediaSourceId,
         playMethod,
         playSessionId,
         positionTicks: secondsToTicks(resumeAt),
+        LiveStreamId: liveStreamId,
+        CanSeek: !isLiveTv(item),
+        IsPaused: false,
+        IsMuted: v.muted,
+        VolumeLevel: Math.round(v.volume * 100),
       });
+      if (client.inSyncPlay && !syncQueueAnnouncedRef.current) {
+        syncQueueAnnouncedRef.current = true;
+        client.syncPlaySetQueue([item.Id], secondsToTicks(resumeAt)).catch(() => {});
+      }
       sessionStarted = true;
 
       if (mode === "direct") {
@@ -369,13 +403,15 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
       }
 
       if (mode === "hls") {
-        let url = client.streamUrl(item, {
-          maxBitrate: opt?.maxBitrate,
-          maxHeight: opt?.maxHeight,
-          playSessionId,
-          adaptive: quality === "auto",
-        });
-        if (quality === "auto") {
+        let url = isLiveTv(item) && negotiatedTranscodingUrl
+          ? client.mediaUrl(negotiatedTranscodingUrl)
+          : client.streamUrl(item, {
+              maxBitrate: opt?.maxBitrate,
+              maxHeight: opt?.maxHeight,
+              playSessionId,
+              adaptive: quality === "auto",
+            });
+        if (quality === "auto" && !isLiveTv(item)) {
           try {
             const profiles = AUTO_QUALITY_OPTIONS.filter((profile) => profile.maxHeight <= opt.maxHeight);
             const masters = await Promise.all(
@@ -423,7 +459,7 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
           // MediaSource, without replacing the video or discarding its buffer.
           ...(quality === "auto"
             ? autoHlsConfig(
-                connectionBandwidthEstimate(navigator.connection) ||
+                measuredBandwidth || connectionBandwidthEstimate(navigator.connection) ||
                   Math.floor((autoStartProfile?.maxBitrate || 0) * 0.7),
               )
             : {}),
@@ -437,17 +473,17 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
         hlsRef.current = hls;
         hls.loadSource(url);
         hls.attachMedia(v);
-        const retuneFromConnection = () => {
+        const applyBandwidthEstimate = (estimate) => {
           if (quality !== "auto") return;
-          const estimate = connectionBandwidthEstimate(navigator.connection);
           if (!estimate) return;
           hls.bandwidthEstimate = estimate;
           if (hls.levels?.length) hls.nextAutoLevel = levelForBandwidth(hls.levels, estimate);
           setStats((s) => ({ ...(s || {}), bandwidthEstimate: estimate }));
         };
+        const retuneFromConnection = () => applyBandwidthEstimate(connectionBandwidthEstimate(navigator.connection));
         hls.on(Hls.Events.MANIFEST_PARSED, () => {
           setStats((s) => ({ ...(s || {}), availableLevels: hls.levels?.length || 0 }));
-          retuneFromConnection();
+          applyBandwidthEstimate(measuredBandwidth || connectionBandwidthEstimate(navigator.connection));
           resumeAndPlay();
         });
         hls.on(Hls.Events.LEVEL_SWITCHED, (_e, data) => {
@@ -526,12 +562,14 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
           }
         });
       } else if (mode === "native-hls") {
-        const url = client.streamUrl(item, {
-          maxBitrate: opt?.maxBitrate,
-          maxHeight: opt?.maxHeight,
-          playSessionId,
-          adaptive: quality === "auto",
-        });
+        const url = isLiveTv(item) && negotiatedTranscodingUrl
+          ? client.mediaUrl(negotiatedTranscodingUrl)
+          : client.streamUrl(item, {
+              maxBitrate: opt?.maxBitrate,
+              maxHeight: opt?.maxHeight,
+              playSessionId,
+              adaptive: quality === "auto",
+            });
         v.src = url;
         v.load();
         v.onloadedmetadata = resumeAndPlay;
@@ -584,8 +622,12 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
           positionTicks: position > 15 ? secondsToTicks(position) : undefined,
           mediaSourceId,
           playSessionId,
+          LiveStreamId: liveStreamId,
+          IsPaused: v.paused,
         });
       }
+      if (liveStreamId) client.closeLiveStream(liveStreamId);
+      if (liveStreamIdRef.current === liveStreamId) liveStreamIdRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [quality, autoQuality, forceAdaptive, reloadNonce]);
@@ -597,7 +639,7 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
     }
     let alive = true;
     const segmentItemId = item.MediaSources?.[0]?.Id || item.Id;
-    client.mediaSegments(segmentItemId, ["Intro"])
+    client.mediaSegments(segmentItemId, ["Recap", "Intro", "Commercial", "Outro"])
       .then((segments) => {
         if (alive) setMediaSegments(segments);
       })
@@ -806,10 +848,25 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
         positionTicks: ticks,
         mediaSourceId: ms,
         playSessionId: playSessionIdRef.current,
+        LiveStreamId: liveStreamIdRef.current,
+        CanSeek: !isLiveTv(item),
+        IsPaused: videoRef.current?.paused ?? false,
+        IsMuted: videoRef.current?.muted ?? false,
+        VolumeLevel: Math.round((videoRef.current?.volume ?? 1) * 100),
+        PlayMethod: playMethodRef.current,
+        AudioStreamIndex: Number.isInteger(audioTrack) ? audioTrack : undefined,
+        SubtitleStreamIndex: Number.isInteger(subtitleTrack) ? subtitleTrack : undefined,
       });
     },
-    [client, item],
+    [audioTrack, client, item, subtitleTrack],
   );
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      if (playSessionIdRef.current) client.pingPlayback(playSessionIdRef.current);
+    }, 20_000);
+    return () => window.clearInterval(timer);
+  }, [client]);
 
   // The source-loading effect owns start/stop for each individual play session
   // (including quality switches). This item-level cleanup only applies the
@@ -882,6 +939,17 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
     }
   };
 
+  const onVideoPlaying = () => {
+    setBuffering(false);
+    if (client.inSyncPlay && !syncReadyRef.current) {
+      syncReadyRef.current = true;
+      const video = videoRef.current;
+      client.syncPlayReady(secondsToTicks(video?.currentTime || 0), !video?.paused).catch(() => {
+        syncReadyRef.current = false;
+      });
+    }
+  };
+
   const retryPlayback = useCallback(() => {
     setError(null);
     setReloadNonce((value) => value + 1);
@@ -918,27 +986,33 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
     if (!v) return;
     if (v.paused) {
       userPausedRef.current = false;
+      if (client.inSyncPlay) {
+        client.syncPlayUnpause().catch(() => {});
+        return;
+      }
       v.play().catch(() => {});
       setPlaying(true);
     } else {
       userPausedRef.current = true;
+      if (client.inSyncPlay) client.syncPlayPause().catch(() => {});
       v.pause();
       setPlaying(false);
       report(reportablePosition(v));
     }
-  }, [report]);
+  }, [client, report]);
 
   const skip = useCallback(
     (delta) => {
       const v = videoRef.current;
       if (!v) return;
       v.currentTime = Math.max(0, Math.min(v.duration || 0, v.currentTime + delta));
+      if (client.inSyncPlay) client.syncPlaySeek(secondsToTicks(v.currentTime)).catch(() => {});
       resumeTargetRef.current = 0;
       lastPositionRef.current = v.currentTime;
       setCurrent(v.currentTime);
       report(v.currentTime);
     },
-    [report],
+    [client, report],
   );
 
   const seekTo = useCallback(
@@ -946,12 +1020,13 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
       const v = videoRef.current;
       if (!v || !v.duration) return;
       v.currentTime = frac * v.duration;
+      if (client.inSyncPlay) client.syncPlaySeek(secondsToTicks(v.currentTime)).catch(() => {});
       resumeTargetRef.current = 0;
       lastPositionRef.current = v.currentTime;
       setCurrent(v.currentTime);
       report(v.currentTime);
     },
-    [report],
+    [client, report],
   );
 
   // Pointer Events (not onClick) so this also works as a real drag on touch:
@@ -1119,6 +1194,62 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
     const timer = setInterval(applyDelay, 500);
     return () => clearInterval(timer);
   }, [subtitleDelay, subtitleTrack]);
+
+  useEffect(() => {
+    const timers = new Set();
+    const applyPlaystate = (data = {}) => {
+      const video = videoRef.current;
+      if (!video) return;
+      const command = data.Command;
+      const rawPositionTicks = data.SeekPositionTicks ?? data.PositionTicks;
+      const positionTicks = rawPositionTicks == null ? null : Number(rawPositionTicks);
+      if (Number.isFinite(positionTicks)) {
+        const position = ticksToSeconds(positionTicks);
+        if (Math.abs(video.currentTime - position) > 0.75) video.currentTime = position;
+      }
+      if (command === "Pause") video.pause();
+      else if (command === "Unpause" || command === "Play") video.play().catch(() => {});
+      else if (command === "Stop") onClose();
+      else if ((command === "NextTrack" || command === "PlayNext") && nextItem && onPlayNext) onPlayNext();
+    };
+    const unsubscribe = client.onSocketMessage((message) => {
+      if (message?.MessageType === "Playstate") {
+        applyPlaystate(message.Data);
+        return;
+      }
+      if (message?.MessageType === "GeneralCommand") {
+        const command = message.Data || {};
+        const args = command.Arguments || {};
+        if (command.Name === "SetVolume") changeVolume(Number(args.Volume) / 100);
+        else if (command.Name === "Mute") changeVolume(0);
+        else if (command.Name === "Unmute" || command.Name === "ToggleMute") changeVolume(muted ? volume || 1 : 0);
+        else if (command.Name === "SetAudioStreamIndex") selectAudioTrack(Number(args.Index));
+        else if (command.Name === "SetSubtitleStreamIndex") selectSubtitleTrack(Number(args.Index));
+        return;
+      }
+      if (message?.MessageType !== "SyncPlayCommand") return;
+      const command = message.Data;
+      if (!command) return;
+      const when = Date.parse(command.When);
+      const delay = Number.isFinite(when) ? Math.max(0, when - Date.now()) : 0;
+      const timer = window.setTimeout(() => {
+        timers.delete(timer);
+        const hasPosition = command.PositionTicks != null;
+        const elapsedTicks = hasPosition && ["Play", "Unpause"].includes(command.Command) && Number.isFinite(when)
+          ? Math.max(0, Date.now() - when) * 10_000
+          : 0;
+        applyPlaystate({
+          ...command,
+          PositionTicks: hasPosition ? Number(command.PositionTicks) + elapsedTicks : undefined,
+        });
+      }, delay);
+      timers.add(timer);
+    });
+    return () => {
+      unsubscribe();
+      timers.forEach((timer) => window.clearTimeout(timer));
+    };
+  }, [changeVolume, client, muted, nextItem, onClose, onPlayNext, selectAudioTrack, selectSubtitleTrack, volume]);
 
   // Keyboard: space toggles, arrows skip, m mutes, f fullscreen, p PiP, Esc closes.
   useEffect(() => {
@@ -1336,11 +1467,11 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
         .filter((c) => duration > 0 && c.time >= 0 && c.time < duration),
     [item, duration],
   );
-  const introSegment = useMemo(
-    () => findIntroSegment(mediaSegments, item?.Chapters || [], duration),
-    [duration, item, mediaSegments],
+  const skipSegment = useMemo(
+    () => findSkippableSegment(mediaSegments, item?.Chapters || [], duration, current),
+    [current, duration, item, mediaSegments],
   );
-  const canSkipIntro = introSegment && current >= introSegment.start && current < introSegment.end - 1;
+  const canSkipSegment = Boolean(skipSegment);
   const trickplay = useMemo(() => {
     const sourceId = item?.MediaSources?.[0]?.Id;
     const manifests = item?.Trickplay || {};
@@ -1416,10 +1547,16 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
         className={`player-video player-subtitle-${subtitleSize} player-subtitle-bg-${subtitleBackground}`}
         playsInline
         autoPlay
-        onPlay={() => setPlaying(true)}
-        onPause={() => setPlaying(false)}
+        onPlay={() => {
+          setPlaying(true);
+          report(reportablePosition(videoRef.current));
+        }}
+        onPause={() => {
+          setPlaying(false);
+          report(reportablePosition(videoRef.current));
+        }}
         onWaiting={onVideoWaiting}
-        onPlaying={() => setBuffering(false)}
+        onPlaying={onVideoPlaying}
         onTimeUpdate={onTime}
         onDurationChange={() => setDuration(videoRef.current?.duration || 0)}
         onLoadedMetadata={() => setDuration(videoRef.current?.duration || 0)}
@@ -1486,13 +1623,13 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
         </div>
       )}
 
-      {canSkipIntro && !error && !showStats && !showQuality && !showSpeed && !showTracks && (
+      {canSkipSegment && !error && !showStats && !showQuality && !showSpeed && !showTracks && (
         <button
           className="player-skip-intro"
-          onClick={() => seekTo(introSegment.end / duration)}
-          aria-label="Skip intro"
+          onClick={() => seekTo(skipSegment.end / duration)}
+          aria-label={`Skip ${skipSegment.type.toLowerCase()}`}
         >
-          <span>Skip intro</span>
+          <span>Skip {skipSegment.type.toLowerCase()}</span>
           <span aria-hidden="true">›</span>
         </button>
       )}

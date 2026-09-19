@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { findIntroSegment, transcodeReasons } from "../src/components/playbackMetadata.js";
+import { findIntroSegment, findSkippableSegment, transcodeReasons } from "../src/components/playbackMetadata.js";
 
 const ticks = (seconds) => seconds * 10_000_000;
 
@@ -22,6 +22,18 @@ test("uses an exact, early chapter marker only when it has a safe end", () => {
   );
   assert.equal(findIntroSegment([], [{ Name: "An introduction", StartPositionTicks: 0 }], 1800), null);
   assert.equal(findIntroSegment([], [{ Name: "Intro", StartPositionTicks: ticks(700) }, { Name: "Part", StartPositionTicks: ticks(760) }], 1800), null);
+});
+
+test("finds recap, commercial and outro media segments at playback time", () => {
+  const segments = [
+    { Type: "Recap", StartTicks: ticks(0), EndTicks: ticks(45) },
+    { Type: "Commercial", StartTicks: ticks(600), EndTicks: ticks(660) },
+    { Type: "Outro", StartTicks: ticks(1700), EndTicks: ticks(1790) },
+  ];
+  assert.equal(findSkippableSegment(segments, [], 1800, 20)?.type, "Recap");
+  assert.equal(findSkippableSegment(segments, [], 1800, 620)?.type, "Commercial");
+  assert.equal(findSkippableSegment(segments, [], 1800, 1750)?.type, "Outro");
+  assert.equal(findSkippableSegment(segments, [], 1800, 800), null);
 });
 
 test("extracts and humanizes Jellyfin transcode reasons", () => {

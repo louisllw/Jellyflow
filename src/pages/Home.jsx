@@ -68,6 +68,8 @@ export function Home() {
   const { client, user } = useSession();
   const [home, setHome] = useState(undefined);
   const [arrivals, setArrivals] = useState(undefined);
+  const [suggestions, setSuggestions] = useState([]);
+  const [recommendations, setRecommendations] = useState([]);
   const [error, setError] = useState(null);
   const [tick, setTick] = useState(0);
   const [heroIndex, setHeroIndex] = useState(0);
@@ -82,7 +84,7 @@ export function Home() {
     setError(null);
     (async () => {
       try {
-        const [h, newItems] = await Promise.all([
+        const [h, newItems, suggested, recommended] = await Promise.all([
           client.home(),
           client.items({
             SortBy: "DateAdded",
@@ -94,10 +96,19 @@ export function Home() {
             Fields:
               "Overview,Genres,PrimaryImageAspectRatio,OriginalRuntimeTicks,ProductionYear,CommunityRating,BackdropImageTags",
           }),
+          client.suggestions().catch(() => ({ Items: [] })),
+          client.movieRecommendations().catch(() => []),
         ]);
         if (!alive) return;
         setHome(h);
         setArrivals(newItems?.Items || []);
+        setSuggestions(suggested?.Items || []);
+        setRecommendations(
+          (Array.isArray(recommended) ? recommended : recommended?.Items || [])
+            .flatMap((group) => group?.Items || [])
+            .filter((item, index, all) => item?.Id && all.findIndex((candidate) => candidate?.Id === item.Id) === index)
+            .slice(0, 24),
+        );
       } catch (e) {
         if (alive) setError(e);
       }
@@ -254,6 +265,8 @@ export function Home() {
         client={client}
         empty=""
       />
+      <Shelf title="Suggested for you" items={suggestions} client={client} empty="" />
+      <Shelf title="Because you watched" items={recommendations} client={client} empty="" />
     </>
   );
 }

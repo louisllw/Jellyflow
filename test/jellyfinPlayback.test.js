@@ -125,3 +125,82 @@ test("media segments request only intro markers", async () => {
   assert.equal(url.pathname, "/MediaSegments/source");
   assert.equal(url.searchParams.get("IncludeSegmentTypes"), "Intro");
 });
+
+test("playback info preserves Jellyfin live-stream negotiation fields", async () => {
+  const previousDocument = globalThis.document;
+  const previousFetch = globalThis.fetch;
+  globalThis.document = { createElement: () => ({ canPlayType: () => "probably" }) };
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    PlaySessionId: "session",
+    MediaSources: [{
+      Id: "source",
+      LiveStreamId: "live-stream",
+      TranscodingUrl: "/Videos/item/master.m3u8?PlaySessionId=session",
+    }],
+  }), { status: 200, headers: { "content-type": "application/json" } });
+  try {
+    const info = await client().getPlaybackInfo({ Id: "item", MediaSources: [{ Id: "source" }] });
+    assert.equal(info.playSessionId, "session");
+    assert.equal(info.liveStreamId, "live-stream");
+    assert.equal(info.transcodingUrl, "/Videos/item/master.m3u8?PlaySessionId=session");
+  } finally {
+    globalThis.fetch = previousFetch;
+    globalThis.document = previousDocument;
+  }
+});
+
+test("live streams are explicitly released", async () => {
+  const calls = [];
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    calls.push({ url, init });
+    return new Response(null, { status: 204 });
+  };
+  try {
+    await client().closeLiveStream("live-stream");
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+  const url = new URL(calls[0].url);
+  assert.equal(url.pathname, "/LiveStreams/Close");
+  assert.equal(url.searchParams.get("liveStreamId"), "live-stream");
+  assert.equal(calls[0].init.method, "POST");
+});
+
+test("capabilities advertise the browser playback profile", async () => {
+  const calls = [];
+  const previousDocument = globalThis.document;
+  const previousFetch = globalThis.fetch;
+  globalThis.document = { createElement: () => ({ canPlayType: () => "probably" }) };
+  globalThis.fetch = async (url, init) => {
+    calls.push({ url, init });
+    return new Response(null, { status: 204 });
+  };
+  try {
+    await client().registerCapabilities();
+  } finally {
+    globalThis.fetch = previousFetch;
+    globalThis.document = previousDocument;
+  }
+  assert.equal(new URL(calls[0].url).pathname, "/Sessions/Capabilities/Full");
+  const body = JSON.parse(calls[0].init.body);
+  assert.deepEqual(body.PlayableMediaTypes, ["Audio", "Video"]);
+  assert.ok(body.DeviceProfile.DirectPlayProfiles.length > 0);
+});
+
+test("SyncPlay create and join use request DTO bodies", async () => {
+  const calls = [];
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    calls.push({ url, init });
+    return new Response(null, { status: 204 });
+  };
+  try {
+    await client().createSyncPlayGroup("Friday room");
+    await client().joinSyncPlayGroup("group-id");
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+  assert.deepEqual(JSON.parse(calls[0].init.body), { GroupName: "Friday room" });
+  assert.deepEqual(JSON.parse(calls[1].init.body), { GroupId: "group-id" });
+});

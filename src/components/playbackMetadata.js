@@ -1,6 +1,12 @@
 import { ticksToSeconds } from "../api/utils.js";
 
 const INTRO_CHAPTER_NAMES = new Set(["intro", "introduction", "opening", "opening credits", "op"]);
+const SEGMENT_TYPES = {
+  1: "Commercial",
+  3: "Recap",
+  4: "Outro",
+  5: "Intro",
+};
 
 const TRANSCODE_REASON_LABELS = {
   ContainerNotSupported: "Container not supported",
@@ -46,6 +52,27 @@ export function findIntroSegment(mediaSegments = [], chapters = [], duration = 0
   const latestReliableStart = Math.min(duration * 0.25, 600);
   if (start > latestReliableStart || !validIntro(start, end, duration) || end - start > 300) return null;
   return { start, end, source: "chapter" };
+}
+
+export function findSkippableSegment(mediaSegments = [], chapters = [], duration = 0, current = 0) {
+  const explicit = mediaSegments
+    .map((segment) => {
+      const type = typeof segment?.Type === "number" ? SEGMENT_TYPES[segment.Type] : segment?.Type;
+      return {
+        type,
+        start: ticksToSeconds(segment?.StartTicks),
+        end: ticksToSeconds(segment?.EndTicks),
+        source: "media-segment",
+      };
+    })
+    .filter((segment) => ["Recap", "Intro", "Commercial", "Outro"].includes(segment.type))
+    .filter((segment) => validIntro(segment.start, segment.end, duration))
+    .sort((a, b) => a.start - b.start);
+  const active = explicit.find((segment) => current >= segment.start && current < segment.end - 1);
+  if (active) return active;
+  const intro = findIntroSegment(mediaSegments, chapters, duration);
+  if (intro && current >= intro.start && current < intro.end - 1) return { ...intro, type: "Intro" };
+  return null;
 }
 
 function humanizeReason(reason) {

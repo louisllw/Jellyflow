@@ -60,7 +60,7 @@ Each experimental build also gets an immutable `experimental-<short-commit>` tag
 - Full-library browsing, filtering, sorting, pagination and top-level search for shows, movies and live TV.
 - Movie, series and episode details with season navigation, previous/next episode links, cast and watch progress.
 - Live TV guide, programme details, channel favourites, recording controls and recordings library.
-- Responsive HLS player with resume, seek, next-episode prompts and automatic advancement, volume, mobile controls, keyboard shortcuts and progress reporting.
+- Responsive player with smart Direct Play/adaptive HLS selection, fixed manual quality options, recoverable errors, resume, buffered/trickplay seek previews, remembered audio and subtitle preferences, lock-screen controls, next-episode advancement, mobile controls, keyboard shortcuts and accurate Jellyfin session reporting.
 - Installable PWA with a standalone app experience and privacy-safe shell caching.
 - Runtime-configurable server connection, responsive navigation and reduced-motion support.
 

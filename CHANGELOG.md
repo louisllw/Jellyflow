@@ -4,6 +4,13 @@
 
 Features and fixes:
 
+- Auto quality now follows measured connection throughput and buffered playback, stepping through 360p, 480p, 720p and 1080p with conservative upgrade thresholds and a cooldown to prevent quality bouncing. Jellyfin/hls.js rendition switching remains seamless where the server provides a useful adaptive ladder.
+- Changing quality now carries the current timestamp across the media-source reload instead of restarting the video from the beginning; manually selected qualities remain fixed rather than adaptive.
+- Auto now keeps low-bitrate, browser-compatible sources on Direct Play when measured connection headroom is ample, then promotes repeated-stalling playback to adaptive HLS. Quality reloads preserve explicit pause intent and remembered audio/subtitle language choices.
+- Jellyfin playback sessions now begin after negotiation with the real play method and `PlaySessionId`, and each superseded quality/transcode session is explicitly stopped instead of waiting for server cleanup.
+- Playback failures now recover through Retry, Try lower quality and Play original actions, reset transient network failures after successful fragments, use bounded backoff, and automatically retry after connectivity returns.
+- Added buffered-range rendering, Jellyfin trickplay thumbnail and chapter previews while scrubbing, Media Session lock-screen controls, screen wake lock during active playback, keyboard focus containment, and remembered subtitle size, background and timing controls.
+- Added Node regression coverage for adaptive-quality hysteresis, quality recovery, HLS URL parameters, session payloads, requested trickplay metadata and tile URLs.
 - Added a Jellyfin-style next-episode flow: episode playback shows an Up Next prompt during the final 30 seconds, advances automatically at the end, and continues across season boundaries.
 - Episode pages now link back to the parent show, expose previous and next episodes, open the current season in place, and provide a direct route to every season.
 - Search now returns only top-level TV shows, movies and live TV channels, with dedicated filters for each; individual seasons and incomplete search-hint records no longer appear as results.

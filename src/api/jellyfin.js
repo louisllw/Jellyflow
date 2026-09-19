@@ -305,6 +305,7 @@ export class Jellyfin {
     // playback position. BackdropImageTags is part of the returned DTO.
     return this._get(`/Items/${id}`, {
       UserId: this.userId,
+      Fields: "MediaSources,MediaStreams,Trickplay",
       ...extra,
     });
   }
@@ -432,6 +433,15 @@ export class Jellyfin {
     return url;
   }
 
+  trickplayTileUrl(item, width, index, mediaSourceId) {
+    const id = typeof item === "object" ? item?.Id : item;
+    if (!id || !width || index == null) return "";
+    return `${this.serverUrl}/Videos/${id}/Trickplay/${width}/${index}.jpg${qs({
+      api_key: this.token,
+      MediaSourceId: mediaSourceId,
+    })}`;
+  }
+
   /**
    * Ask Jellyfin whether this browser can play the source file as-is, or how
    * it needs to be transcoded if not — instead of assuming a transcode is
@@ -464,7 +474,7 @@ export class Jellyfin {
   }
 
   /** HLS master playlist URL (Jellyfin transcodes to HLS on the server). */
-  streamUrl(item, { mediaSourceId, maxBitrate, maxHeight, playSessionId } = {}) {
+  streamUrl(item, { mediaSourceId, maxBitrate, maxHeight, playSessionId, adaptive = true } = {}) {
     const id = typeof item === "object" ? item && item.Id : item;
     if (!id) return "";
     const source = typeof item === "object" ? item.MediaSources?.[0] : undefined;
@@ -473,18 +483,18 @@ export class Jellyfin {
     // The video HLS endpoint does not turn MaxStreamingBitrate into an encoder
     // target. It expects separate VideoBitrate and AudioBitrate values; without
     // them Jellyfin can fall back to a very low rendition (commonly 640 kbps).
-    // Treat the quality menu's bitrate as a total budget and reserve a modest
-    // stereo AAC allowance from it. For Auto, use the source bitrate when the
-    // item metadata provides one, with a sensible high-quality fallback.
+    // Treat the quality target as a total budget and reserve a modest stereo
+    // AAC allowance from it. The player supplies Auto's current ceiling; other
+    // callers fall back to the source bitrate, then a high-quality default.
     const streamBitrates = source?.MediaStreams?.map((stream) => stream.BitRate || 0) || [];
     const detectedBitrate = source?.Bitrate || streamBitrates.reduce((sum, rate) => sum + rate, 0);
     const totalBitrate = maxBitrate || detectedBitrate || 20_000_000;
     const audioBitrate = Math.min(192_000, Math.max(96_000, Math.floor(totalBitrate / 8)));
     const videoBitrate = Math.max(500_000, totalBitrate - audioBitrate);
 
-    // This is the fallback path once getPlaybackInfo has already ruled out
-    // direct play — H264/AAC is the one transcode target virtually every
-    // browser can play, so it stays fixed rather than negotiated further.
+    // This is either Auto's adaptive path or the fallback once playback-info
+    // negotiation rules out direct play. H264/AAC is the transcode target
+    // virtually every browser can play, so it stays codec-stable.
     return `${this.serverUrl}/Videos/${id}/master.m3u8${qs({
       api_key: this.token,
       MediaSourceId: ms,
@@ -496,7 +506,7 @@ export class Jellyfin {
       MaxHeight: maxHeight,
       SegmentContainer: "ts",
       TranscodingMaxAudioChannels: 2,
-      EnableAdaptiveBitrateStreaming: true,
+      EnableAdaptiveBitrateStreaming: adaptive,
     })}`;
   }
 
@@ -514,7 +524,7 @@ export class Jellyfin {
 
   /* ------------------------------ play state ------------------------------ */
 
-  startPlayback(item, { mediaSourceId, mediaVersion } = {}) {
+  startPlayback(item, { mediaSourceId, playMethod = "Transcode", playSessionId, positionTicks } = {}) {
     const itemId = typeof item === "object" ? item && item.Id : item;
     const msId =
       mediaSourceId ||
@@ -524,7 +534,9 @@ export class Jellyfin {
       body: {
         ItemId: itemId,
         MediaSourceId: msId,
-        PlayMethod: mediaVersion || "Transcode",
+        PlayMethod: playMethod,
+        PlaySessionId: playSessionId,
+        PositionTicks: positionTicks,
       },
     }).catch(() => {});
   }

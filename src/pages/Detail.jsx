@@ -107,7 +107,6 @@ export function Detail() {
 
   const play = useCallback(async () => {
     if (playable) {
-      client.startPlayback(item).catch(() => {});
       setPlaying(item);
       return;
     }
@@ -118,7 +117,6 @@ export function Detail() {
         const out = await client.nextEpisodes(item.Id);
         const first = out?.Items?.[0];
         if (first) {
-          client.startPlayback(first).catch(() => {});
           setPlaying(first);
         }
       } catch (e) {
@@ -186,7 +184,6 @@ export function Detail() {
     if (!nextEpisode) return;
     try {
       const fullEpisode = await client.item(nextEpisode.Id);
-      client.startPlayback(fullEpisode).catch(() => {});
       setPlaying(fullEpisode);
     } catch (e) {
       setError(e);

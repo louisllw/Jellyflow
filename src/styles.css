@@ -2114,6 +2114,33 @@ img {
   border: none;
 }
 
+.player-subtitle-small::cue {
+  font-size: 82%;
+}
+
+.player-subtitle-normal::cue {
+  font-size: 100%;
+}
+
+.player-subtitle-large::cue {
+  font-size: 124%;
+}
+
+.player-subtitle-bg-none::cue {
+  background: transparent;
+  text-shadow: 0 1px 3px #000, 0 0 8px #000;
+}
+
+.player-subtitle-bg-shadow::cue {
+  background: rgba(0, 0, 0, 0.28);
+  text-shadow: 0 1px 3px #000, 0 0 8px #000;
+}
+
+.player-subtitle-bg-dark::cue {
+  background: rgba(0, 0, 0, 0.78);
+  text-shadow: none;
+}
+
 .player:fullscreen .player-video,
 .player:-webkit-full-screen .player-video,
 .player-video:fullscreen,
@@ -2188,6 +2215,15 @@ img {
   box-shadow: 0 0 16px rgba(0, 164, 220, 0.28);
 }
 
+.player-buffered {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-radius: 99px;
+  background: rgba(205, 212, 244, 0.28);
+  pointer-events: none;
+}
+
 .player-knob {
   position: absolute;
   top: 50%;
@@ -2214,6 +2250,50 @@ img {
   background: rgba(5, 7, 10, 0.6);
   transform: translateX(-1px);
   pointer-events: none;
+}
+
+.player-seek-preview {
+  position: absolute;
+  left: clamp(90px, var(--preview-left), calc(100% - 90px));
+  bottom: calc(100% + 14px);
+  z-index: 8;
+  overflow: hidden;
+  max-width: min(320px, 72vw);
+  border: 1px solid rgba(205, 212, 244, 0.24);
+  border-radius: 10px;
+  background: #080a14;
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.58);
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.player-seek-preview-image {
+  max-width: min(320px, 72vw);
+  background-repeat: no-repeat;
+}
+
+.player-seek-preview-copy {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 34px;
+  padding: 7px 10px;
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.player-seek-preview-copy span {
+  overflow: hidden;
+  color: var(--ink-dim);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.player-seek-preview-copy b {
+  flex: none;
+  font-weight: 600;
 }
 
 .player-controls {
@@ -2358,6 +2438,18 @@ img {
   color: var(--cyan-bright);
 }
 
+.player-menu-options {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+  padding: 2px 5px 6px;
+}
+
+.player-menu-options button {
+  justify-content: center;
+  padding-inline: 6px;
+}
+
 .player-stats {
   position: absolute;
   bottom: calc(100% + 10px);
@@ -2442,6 +2534,18 @@ img {
   /* Purely informational — never block clicks meant for the controls above it. */
   pointer-events: none;
   z-index: 1;
+}
+
+.player-error-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+  max-width: min(92vw, 680px);
+}
+
+.player-error-actions .btn {
+  min-height: 44px;
 }
 
 .player-loading button {
@@ -3404,6 +3508,7 @@ img {
   }
 
   .player-fill,
+  .player-buffered,
   .player-chapter-mark {
     top: 8px;
     bottom: 8px;

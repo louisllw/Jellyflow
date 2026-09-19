@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useSession } from "../state/Session.jsx";
 import { Shelf, Loading, ErrorBox, itemProgress, ProgressRing } from "../components/Cards.jsx";
 import { IconFilm, IconTv, IconBroadcast, IconMusicNote } from "../components/Icons.jsx";
-import { fmtRuntimeTicks } from "../api/utils.js";
+import { fmtRuntimeTicks, looksPlayable } from "../api/utils.js";
 
 const CATEGORIES = [
   { key: "Movies", label: "Movies", icon: IconFilm },
@@ -28,7 +28,7 @@ function makeHeroPool(home, arrivals) {
     return true;
   });
   const movies = unique.filter((item) => item.Type === "Movie");
-  const shows = unique.filter((item) => item.Type === "Series" || item.Type === "BoxSet");
+  const shows = unique.filter((item) => item.Type === "Series");
   const mixed = [];
 
   // Interleave the two kinds so a run of newly-added films does not push
@@ -133,6 +133,7 @@ export function Home() {
   if (!home) return <Loading label="Setting the room" />;
 
   const hero = heroPool[heroIndex % Math.max(1, heroPool.length)];
+  const heroCanPlay = hero && (hero.Type === "Series" || looksPlayable(hero));
   const heroUrl = hero ? client.image(hero, "Backdrop", { w: 1600, q: 85 }) : "";
   const heroFallbackUrl = hero ? client.image(hero, "Primary", { w: 1200, q: 85 }) : "";
   const heroSub = hero
@@ -182,12 +183,14 @@ export function Home() {
             {heroSub && <div className="hero-meta">{heroSub}</div>}
             {hero.Overview && <p className="hero-overview">{hero.Overview}</p>}
             <div className="hero-actions">
-              <a className="btn btn-primary btn-play" href={`#/item/${hero.Id}?play=1`}>
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M8 5.5v13l11-6.5z" />
-                </svg>
-                {hero.Type === "Series" || hero.Type === "BoxSet" ? "Continue the series" : "Play"}
-              </a>
+              {heroCanPlay && (
+                <a className="btn btn-primary btn-play" href={`#/item/${hero.Id}?play=1`}>
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M8 5.5v13l11-6.5z" />
+                  </svg>
+                  {hero.Type === "Series" ? "Continue the series" : "Play"}
+                </a>
+              )}
               <a className="btn" href={`#/item/${hero.Id}`}>
                 Details
               </a>

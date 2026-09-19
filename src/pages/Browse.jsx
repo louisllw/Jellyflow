@@ -8,7 +8,7 @@ import { IconLibrary, IconFilm, IconTv, IconBroadcast, IconMusicNote } from "../
 const TYPE_FILTERS = [
   { key: "All", label: "Everything", value: "", icon: IconLibrary, exclude: "TvChannel" },
   { key: "Movies", label: "Movies", value: "Movie", icon: IconFilm },
-  { key: "Series", label: "TV Shows", value: "Series,BoxSet", icon: IconTv },
+  { key: "Series", label: "TV Shows", value: "Series", icon: IconTv },
   { key: "LiveTV", label: "Live TV", value: "TvChannel", icon: IconBroadcast, live: true },
   { key: "Music", label: "Music", value: "Audio,MusicAlbum,Artist,MusicVideo", icon: IconMusicNote },
 ];
@@ -37,6 +37,15 @@ export function Browse() {
   const [params, setParams] = useSearchParams();
   const initialType = TYPE_FILTERS.some((t) => t.key === params.get("type")) ? params.get("type") : "Movies";
   const [type, setTypeState] = useState(initialType);
+  // Keep the filter in step with the URL so a link from elsewhere (Home's
+  // category tiles, a shared /browse?type=… address) lands in the right room,
+  // not just the first one typed.
+  useEffect(() => {
+    const urlType = params.get("type");
+    const nextType = TYPE_FILTERS.some((t) => t.key === urlType) ? urlType : "Movies";
+    setTypeState((current) => (current === nextType ? current : nextType));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [params]);
   const [sort, setSort] = useState("recent");
   const [items, setItems] = useState(undefined);
   const [start, setStart] = useState(0);

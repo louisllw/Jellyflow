@@ -19,7 +19,11 @@ export function loadConfig() {
 }
 
 export function saveConfig(cfg) {
-  localStorage.setItem(LS_CONFIG, JSON.stringify(cfg));
+  // Storage can be unavailable (private browsing, quota) — in that case the
+  // session simply won't survive a reload; the in-memory client still works.
+  try {
+    localStorage.setItem(LS_CONFIG, JSON.stringify(cfg));
+  } catch {}
 }
 
 export function clearConfig() {
@@ -272,14 +276,6 @@ export class Jellyfin {
     }));
   }
 
-  nextUp(params = {}) {
-    return this._get("/NextUp", { limit: 24, ...params });
-  }
-
-  latest(params = {}) {
-    return this._get("/LatestMedia", { limit: 24, ...params });
-  }
-
   items(params = {}) {
     return this._get("/Items", {
       Recursive: true,
@@ -291,10 +287,25 @@ export class Jellyfin {
   }
 
   item(id, extra = {}) {
+    // Identify the user explicitly so the item DTO includes that user's
+    // playback position. BackdropImageTags is part of the returned DTO.
     return this._get(`/Items/${id}`, {
-      Fields:
-        "Overview,Genres,ProductionYear,CommunityRating,CriticRating,OriginalRuntimeTicks,Status,MediaSources,People",
+      UserId: this.userId,
       ...extra,
+    });
+  }
+
+  // The next unwatched episodes of a series — the same data the official
+  // client uses for "Next Up" on a series page. One call finds the episode
+  // to start with when a whole series (rather than one file) is played.
+  nextEpisodes(seriesId, params = {}) {
+    return this._get("/Shows/NextUp", {
+      UserId: this.userId,
+      SeriesId: seriesId,
+      Limit: 1,
+      EnableUserData: true,
+      Fields: "PrimaryImageAspectRatio,Overview,MediaSources",
+      ...params,
     });
   }
 

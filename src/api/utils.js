@@ -39,7 +39,7 @@ export function truncate(s, n) {
 const TYPE_LABEL = {
   Movie: "Film",
   Series: "Series",
-  BoxSet: "Series",
+  BoxSet: "Collection",
   Season: "Season",
   Episode: "Episode",
   Video: "Video",

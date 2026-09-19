@@ -20,12 +20,12 @@ export function Shell({ children }) {
   const onSearch = location.pathname === "/search";
   const [q, setQ] = useState(onSearch ? params.get("q") || "" : "");
 
-  // Keep the local field in step with the URL (back/forward, other entry).
+  // Keep the local field in step with the URL: back/forward, opening the
+  // search rail while already on /search, and a fresh ?q=… from a shared
+  // link all land in the field — not only on pathname changes.
   useEffect(() => {
-    if (location.pathname === "/search") setQ(params.get("q") || "");
-    else if (!q) setQ("");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [location.pathname]);
+    setQ(onSearch ? params.get("q") || "" : "");
+  }, [onSearch, params]);
 
   const type = (v) => {
     setQ(v);

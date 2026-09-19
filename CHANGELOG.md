@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.0-beta.2 (unreleased)
+
+Bug fixes and refinements:
+
+- The detail page now works for series: "Continue the series" resolves the next unwatched episode through Jellyfin's Next Up API, the backdrop image uses the returned tag list, and item requests include the active user for resume positions.
+- Fix an autoplay loop: closing the player no longer immediately re-opens it via the `?play=1` URL parameter.
+- The library browse page now honors the `?type=` URL parameter, so the Home page's category tiles open the correct room, and the shared search field stays in sync with the URL.
+- Switching servers from Settings now swaps the live session in place instead of a hard page reload.
+- Removed dead API client methods that pointed at non-existent Jellyfin endpoints (`/NextUp`, `/LatestMedia`).
+- Hardened the session layer: the saved session no longer mutates React state in place, and saving it no longer throws when browser storage is unavailable.
+- Smoother player: progress UI re-renders are limited to displayed-second changes while playing.
+
 ## 0.1.0-beta.1 — 2026-09-19
 
 The first public beta of Jellyflow: an independent, responsive web client for an existing Jellyfin server.

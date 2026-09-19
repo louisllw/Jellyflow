@@ -8,6 +8,16 @@ A redesigned, flowing web client for [Jellyfin](https://jellyfin.org): dark, res
 
 > **Beta software:** Jellyflow is an independent community project. It is not affiliated with, maintained by, or endorsed by the Jellyfin project. Keep a standard Jellyfin client available while testing.
 
+## Screenshots
+
+| Home | Series details |
+| --- | --- |
+| ![Jellyflow home screen featuring Breaking Bad](screenshots/01-home.jpg) | ![Breaking Bad series page with the next-episode action](screenshots/02-series-detail.jpg) |
+
+| TV library | Episode details |
+| --- | --- |
+| ![TV Shows library filter and poster grid](screenshots/04-tv-shows-filter.jpg) | ![Breaking Bad episode detail page](screenshots/05-player-closed.jpg) |
+
 ## Run it
 
 Jellyflow has no backend or database. It connects directly from your browser to a Jellyfin server you control.

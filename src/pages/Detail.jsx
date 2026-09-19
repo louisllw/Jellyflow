@@ -15,7 +15,7 @@ import { fmtClock, fmtRuntimeTicks, ticksToSeconds, typeLabel, looksPlayable, is
 export function Detail() {
   const { client } = useSession();
   const { id } = useParams();
-  const [params] = useSearchParams();
+  const [params, setParams] = useSearchParams();
   const [item, setItem] = useState(undefined);
   const [seasons, setSeasons] = useState(null);
   const [people, setPeople] = useState([]);
@@ -42,7 +42,7 @@ export function Detail() {
         setItem(it);
         const cast = (it?.People || []).filter((p) => p.Type === "Person");
         setPeople(cast.slice(0, 8));
-        if (it?.Type === "Series" || it?.Type === "BoxSet") {
+        if (it?.Type === "Series") {
           const s = await client.seasons(id);
           if (!alive) return;
           setSeasons(s?.Items || []);
@@ -70,8 +70,11 @@ export function Detail() {
   if (!item) return <Loading label="Opening the archive" />;
 
   const playable = looksPlayable(item);
+  const isSeries = item.Type === "Series";
   const resumePosition = isLiveTv(item) ? 0 : ticksToSeconds(item.UserData?.PlaybackPositionTicks);
-  const backdrops = item.BackdropImages || [];
+  // The /Items response carries backdrop *tags*, not image objects — prefer
+  // the tag list and fall back to the object shape for odd servers.
+  const backdrops = item.BackdropImageTags || item.BackdropImages || [];
   const bg = backdrops[0]
     ? client.image({ Id: id }, "Backdrop", { w: 1600, q: 85 })
     : client.image(item, "Primary", { w: 1200 });
@@ -86,15 +89,31 @@ export function Detail() {
     .filter(Boolean)
     .join("  ·  ");
 
-  const play = () => {
-    if (!playable) return;
-    client.startPlayback(item).catch(() => {});
-    setPlaying(item);
+  const play = async () => {
+    if (playable) {
+      client.startPlayback(item).catch(() => {});
+      setPlaying(item);
+      return;
+    }
+    // A series item itself can't be played — hand the player its next
+    // unwatched episode instead (what "Continue the series" means).
+    if (isSeries) {
+      try {
+        const out = await client.nextEpisodes(item.Id);
+        const first = out?.Items?.[0];
+        if (first) {
+          client.startPlayback(first).catch(() => {});
+          setPlaying(first);
+        }
+      } catch (e) {
+        setError(e);
+      }
+    }
   };
 
   // A "Play" tap from elsewhere (e.g. the Home hero) can jump straight into
   // playback via ?play=1 instead of landing on this page inert.
-  if (playable && params.get("play") === "1" && !autoplayed.current && !playing) {
+  if ((playable || isSeries) && params.get("play") === "1" && !autoplayed.current && !playing) {
     autoplayed.current = true;
     play();
   }
@@ -111,13 +130,17 @@ export function Detail() {
           </div>
           <h1 className="detail-title">{item.Name}</h1>
           {sub && <div className="detail-sub">{sub}</div>}
-          {playable && (
+          {(playable || isSeries) && (
             <div className="hero-actions" style={{ marginTop: 22 }}>
               <button className="btn btn-primary btn-play" onClick={play}>
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
                   <path d="M8 5.5v13l11-6.5z" />
                 </svg>
-                {resumePosition > 30 ? `Resume at ${fmtClock(resumePosition)}` : "Play"}
+                {playable
+                  ? resumePosition > 30
+                    ? `Resume at ${fmtClock(resumePosition)}`
+                    : "Play"
+                  : "Play next episode"}
               </button>
             </div>
           )}
@@ -192,7 +215,28 @@ export function Detail() {
       )}
 
       {playing && (
-        <Player item={playing} initialPosition={resumePosition} onClose={() => { setPlaying(null); retry(); }} />
+        <Player
+          item={playing}
+          // A series autoplays one of *its* episodes, so resume from that
+          // episode's own position, not the series' (nonexistent) one.
+          initialPosition={
+            isLiveTv(playing)
+              ? 0
+              : playing.Id === item.Id
+                ? resumePosition
+                : ticksToSeconds(playing.UserData?.PlaybackPositionTicks)
+          }
+          onClose={() => {
+            // Drop ?play=1 — otherwise closing the player re-runs autoplay on
+            // the very next render and the player immediately opens again.
+            if (params.get("play")) {
+              params.delete("play");
+              setParams(params, { replace: true });
+            }
+            setPlaying(null);
+            retry();
+          }}
+        />
       )}
     </>
   );

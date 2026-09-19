@@ -89,7 +89,9 @@ export function SessionProvider({ children }) {
         const u = await clientRef.current.me();
         if (!alive) return;
         setUser(u);
-        if (u && u.Policy) cfg.Policy = u.Policy;
+        // Replace, don't mutate: cfg lives in state, and mutating it in place
+        // would skip re-renders for anything keyed on the object's identity.
+        if (u && u.Policy) setCfg((c) => (c ? { ...c, Policy: u.Policy } : c));
       } catch (e) {
         if (!alive) return;
         if (e instanceof ApiError && (e.status === 401 || e.status === 403)) {

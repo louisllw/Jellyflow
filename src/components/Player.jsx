@@ -352,7 +352,9 @@ export function Player({ item, initialPosition = 0, onClose }) {
   const onTime = () => {
     const v = videoRef.current;
     if (!v) return;
-    setCurrent(v.currentTime);
+    // timeupdate fires several times a second; the controls only display whole
+    // seconds, so update React state once the displayed second changes.
+    setCurrent((prev) => (Math.floor(v.currentTime) === Math.floor(prev) ? prev : v.currentTime));
     setDuration(v.duration || 0);
     if (!reportTimer.current) {
       reportTimer.current = setTimeout(() => {

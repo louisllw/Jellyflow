@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useSession } from "../state/Session.jsx";
-import { login, saveConfig, clearConfig, hostOf } from "../api/jellyfin.js";
+import { hostOf } from "../api/jellyfin.js";
 
 /**
  * Settings — the only place the app talks about itself.
@@ -9,7 +9,7 @@ import { login, saveConfig, clearConfig, hostOf } from "../api/jellyfin.js";
  * hatches: switch server, or sign out cleanly.
  */
 export function Settings() {
-  const { cfg, user, disconnect } = useSession();
+  const { cfg, user, disconnect, connect } = useSession();
   const [showForm, setShowForm] = useState(false);
   const [server, setServer] = useState(cfg?.serverUrl || "");
   const [username, setUsername] = useState("");
@@ -22,16 +22,10 @@ export function Settings() {
     setBusy(true);
     setError(null);
     try {
-      const { user: u, token } = await login(server, username, password);
-      saveConfig({
-        serverUrl: server.replace(/\/+$/, ""),
-        username: u.Username,
-        userId: u.Id,
-        token,
-        name: u.Name,
-      });
+      // connect() swaps the session client in place through the provider, so
+      // the switch takes effect immediately — no hard reload, no lost state.
+      await connect(server, username, password);
       window.location.hash = "#/";
-      window.location.reload();
     } catch (err) {
       setError(err.message || "Couldn't connect to that server.");
       setBusy(false);

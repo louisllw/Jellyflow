@@ -291,6 +291,7 @@ export class Jellyfin {
 
   items(params = {}) {
     return this._get("/Items", {
+      UserId: this.userId,
       Recursive: true,
       Fields:
         "PrimaryImageAspectRatio,OriginalRuntimeTicks,ProductionYear,CommunityRating,Status,Genres",
@@ -340,9 +341,29 @@ export class Jellyfin {
     });
   }
 
-  search(term, params = {}) {
-    return this._get("/Search/Hints", {
+  seriesEpisodes(seriesId, params = {}) {
+    return this._get(`/Shows/${seriesId}/Episodes`, {
+      UserId: this.userId,
+      EnableUserData: true,
+      Fields:
+        "PrimaryImageAspectRatio,IndexNumber,ParentIndexNumber,SeasonId,SeriesId,SeriesName,SeasonName,OriginalRuntimeTicks,ProductionYear,Overview,CommunityRating",
+      ...params,
+    });
+  }
+
+  // Search full, user-scoped library items rather than /Search/Hints. Hints
+  // include seasons and people and only resemble BaseItemDto objects; feeding
+  // them into media cards produced misleading season results and incomplete
+  // detail links. Keeping this to top-level playable rooms also mirrors the
+  // three filters in the search UI.
+  search(term, { includeItemTypes = "Series,Movie,TvChannel", ...params } = {}) {
+    return this.items({
       SearchTerm: term,
+      IncludeItemTypes: includeItemTypes,
+      ExcludeItemTypes: "Season,Episode",
+      SortBy: "SortName",
+      SortOrder: "Ascending",
+      EnableTotalRecordCount: true,
       Limit: 48,
       ...params,
     });

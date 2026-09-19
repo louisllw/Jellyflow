@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased — experimental
+
+Features and fixes:
+
+- Added a Jellyfin-style next-episode flow: episode playback shows an Up Next prompt during the final 30 seconds, advances automatically at the end, and continues across season boundaries.
+- Episode pages now link back to the parent show, expose previous and next episodes, open the current season in place, and provide a direct route to every season.
+- Search now returns only top-level TV shows, movies and live TV channels, with dedicated filters for each; individual seasons and incomplete search-hint records no longer appear as results.
+- Fixed clearing the shared search field leaving the previous URL query active, stale search responses replacing newer ones, player autoplay running state changes during React render, and failed season requests loading forever.
+- User-data library requests are now explicitly scoped to the signed-in Jellyfin user.
+
 ## 0.1.0-beta.9 — 2026-09-19
 
 Bug fixes:

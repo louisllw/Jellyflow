@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { useSession } from "../state/Session.jsx";
 import { Loading, ErrorBox } from "../components/Cards.jsx";
@@ -18,10 +18,12 @@ export function Detail() {
   const [params, setParams] = useSearchParams();
   const [item, setItem] = useState(undefined);
   const [seasons, setSeasons] = useState(null);
-  const [people, setPeople] = useState([]);
   const [error, setError] = useState(null);
   const [playing, setPlaying] = useState(null);
   const [episodes, setEpisodes] = useState({});
+  const [episodeQueue, setEpisodeQueue] = useState([]);
+  const [seriesParent, setSeriesParent] = useState(null);
+  const [seasonErrors, setSeasonErrors] = useState({});
   const [tick, setTick] = useState(0);
   const autoplayed = useRef(false);
   const retry = () => setTick((t) => t + 1);
@@ -30,8 +32,10 @@ export function Detail() {
     let alive = true;
     setItem(undefined);
     setSeasons(null);
-    setPeople([]);
     setEpisodes({});
+    setEpisodeQueue([]);
+    setSeriesParent(null);
+    setSeasonErrors({});
     setError(null);
     setPlaying(null);
     autoplayed.current = false;
@@ -40,12 +44,30 @@ export function Detail() {
         const it = await client.item(id);
         if (!alive) return;
         setItem(it);
-        const cast = (it?.People || []).filter((p) => p.Type === "Person");
-        setPeople(cast.slice(0, 8));
-        if (it?.Type === "Series") {
-          const s = await client.seasons(id);
+        const seriesId = it?.Type === "Series" ? it.Id : it?.SeriesId;
+        if (seriesId) {
+          const [s, allEpisodes, parent] = await Promise.all([
+            client.seasons(seriesId),
+            client.seriesEpisodes(seriesId, { Limit: 1000 }),
+            it.Type === "Series" ? Promise.resolve(it) : client.item(seriesId),
+          ]);
           if (!alive) return;
-          setSeasons(s?.Items || []);
+          const seasonItems = s?.Items || [];
+          const ordered = (allEpisodes?.Items || []).slice().sort((a, b) => {
+            const seasonDiff = (a.ParentIndexNumber ?? 0) - (b.ParentIndexNumber ?? 0);
+            return seasonDiff || (a.IndexNumber ?? 0) - (b.IndexNumber ?? 0);
+          });
+          setSeasons(seasonItems);
+          setEpisodeQueue(ordered);
+          setSeriesParent(parent);
+          setEpisodes(
+            ordered.reduce((grouped, episode) => {
+              const seasonId = episode.SeasonId || episode.ParentId;
+              if (!seasonId) return grouped;
+              (grouped[seasonId] ||= []).push(episode);
+              return grouped;
+            }, {}),
+          );
         }
       } catch (e) {
         if (alive) setError(e);
@@ -60,36 +82,20 @@ export function Detail() {
   // Load episodes for a season on demand.
   const loadSeason = async (seasonId) => {
     if (episodes[seasonId]) return;
+    setSeasonErrors((previous) => ({ ...previous, [seasonId]: null }));
     try {
       const out = await client.episodes(seasonId, { limit: 200 });
       setEpisodes((prev) => ({ ...prev, [seasonId]: out?.Items || [] }));
-    } catch {}
+    } catch (e) {
+      setSeasonErrors((previous) => ({ ...previous, [seasonId]: e }));
+    }
   };
 
-  if (error) return <ErrorBox error={error} onRetry={retry} />;
-  if (!item) return <Loading label="Opening the archive" />;
-
   const playable = looksPlayable(item);
-  const isSeries = item.Type === "Series";
-  const resumePosition = isLiveTv(item) ? 0 : ticksToSeconds(item.UserData?.PlaybackPositionTicks);
-  // The /Items response carries backdrop *tags*, not image objects — prefer
-  // the tag list and fall back to the object shape for odd servers.
-  const backdrops = item.BackdropImageTags || item.BackdropImages || [];
-  const bg = backdrops[0]
-    ? client.image({ Id: id }, "Backdrop", { w: 1600, q: 85 })
-    : client.image(item, "Primary", { w: 1200 });
+  const isSeries = item?.Type === "Series";
+  const isEpisode = item?.Type === "Episode";
 
-  const sub = [
-    item.ProductionYear,
-    item.SeriesName,
-    item.SeasonName,
-    fmtRuntimeTicks(item.RunTimeTicks),
-    item.CommunityRating ? `★ ${item.CommunityRating}` : "",
-  ]
-    .filter(Boolean)
-    .join("  ·  ");
-
-  const play = async () => {
+  const play = useCallback(async () => {
     if (playable) {
       client.startPlayback(item).catch(() => {});
       setPlaying(item);
@@ -109,14 +115,59 @@ export function Detail() {
         setError(e);
       }
     }
-  };
+  }, [client, isSeries, item, playable]);
 
   // A "Play" tap from elsewhere (e.g. the Home hero) can jump straight into
-  // playback via ?play=1 instead of landing on this page inert.
-  if ((playable || isSeries) && params.get("play") === "1" && !autoplayed.current && !playing) {
-    autoplayed.current = true;
-    play();
-  }
+  // playback via ?play=1 instead of landing on this page inert. Keep this as
+  // an effect: starting playback and setting state during render was prone to
+  // duplicate work under React Strict Mode.
+  useEffect(() => {
+    if ((playable || isSeries) && params.get("play") === "1" && !autoplayed.current && !playing) {
+      autoplayed.current = true;
+      play();
+    }
+  }, [isSeries, params, play, playable, playing]);
+
+  if (error) return <ErrorBox error={error} onRetry={retry} />;
+  if (!item) return <Loading label="Opening the archive" />;
+
+  const resumePosition = isLiveTv(item) ? 0 : ticksToSeconds(item.UserData?.PlaybackPositionTicks);
+  // The /Items response carries backdrop *tags*, not image objects — prefer
+  // the tag list and fall back to the object shape for odd servers.
+  const backdrops = item.BackdropImageTags || item.BackdropImages || [];
+  const bg = backdrops[0]
+    ? client.image({ Id: id }, "Backdrop", { w: 1600, q: 85 })
+    : client.image(item, "Primary", { w: 1200 });
+
+  const sub = [
+    item.ProductionYear,
+    item.SeriesName,
+    item.SeasonName,
+    fmtRuntimeTicks(item.RunTimeTicks),
+    item.CommunityRating ? `★ ${item.CommunityRating}` : "",
+  ]
+    .filter(Boolean)
+    .join("  ·  ");
+
+  const queueIndex = episodeQueue.findIndex((episode) => episode.Id === (playing?.Id || item.Id));
+  const nextEpisode = queueIndex >= 0 ? episodeQueue[queueIndex + 1] || null : null;
+  const currentEpisodeIndex = episodeQueue.findIndex((episode) => episode.Id === item.Id);
+  const previousEpisode = currentEpisodeIndex > 0 ? episodeQueue[currentEpisodeIndex - 1] : null;
+  const detailNextEpisode = currentEpisodeIndex >= 0 ? episodeQueue[currentEpisodeIndex + 1] || null : null;
+  const currentSeason = seasons?.find((season) => season.Id === (item.SeasonId || item.ParentId));
+  const selectedSeasonId = params.get("season");
+  const defaultSeasonId = selectedSeasonId || seasons?.find((season) => (season.IndexNumber ?? 0) > 0)?.Id || seasons?.[0]?.Id;
+
+  const playNext = async () => {
+    if (!nextEpisode) return;
+    try {
+      const fullEpisode = await client.item(nextEpisode.Id);
+      client.startPlayback(fullEpisode).catch(() => {});
+      setPlaying(fullEpisode);
+    } catch (e) {
+      setError(e);
+    }
+  };
 
   return (
     <>
@@ -146,6 +197,32 @@ export function Detail() {
           )}
         </div>
       </section>
+
+      {isEpisode && seriesParent && (
+        <nav className="series-path reveal" aria-label="Series navigation">
+          <div className="series-path-copy">
+            <span>{item.SeasonName || `Season ${item.ParentIndexNumber || ""}`}</span>
+            <Link to={`/item/${seriesParent.Id}`}>{seriesParent.Name}</Link>
+          </div>
+          <div className="series-path-actions">
+            {previousEpisode ? (
+              <Link className="series-path-step" to={`/item/${previousEpisode.Id}`}>
+                <small>Previous</small>
+                <b>E{previousEpisode.IndexNumber ?? "–"} · {previousEpisode.Name}</b>
+              </Link>
+            ) : <span />}
+            <Link className="series-path-all" to={`/item/${seriesParent.Id}${currentSeason ? `?season=${currentSeason.Id}` : ""}`}>
+              All seasons
+            </Link>
+            {detailNextEpisode ? (
+              <Link className="series-path-step series-path-next" to={`/item/${detailNextEpisode.Id}`}>
+                <small>Up next</small>
+                <b>E{detailNextEpisode.IndexNumber ?? "–"} · {detailNextEpisode.Name}</b>
+              </Link>
+            ) : <span />}
+          </div>
+        </nav>
+      )}
 
       <div className="detail-body reveal">
         <div>
@@ -192,7 +269,7 @@ export function Detail() {
       </div>
 
       {/* seasons & episodes for series */}
-      {seasons?.length > 0 && (
+      {isSeries && seasons?.length > 0 && (
         <section className="seasons" aria-label="Seasons and episodes">
           <div className="seasons-heading">
             <div>
@@ -201,22 +278,49 @@ export function Detail() {
             </div>
             <span>{seasons.length} {seasons.length === 1 ? "season" : "seasons"}</span>
           </div>
-          {seasons.map((season, index) => (
+          {seasons.map((season) => (
             <SeasonBlock
               key={season.Id}
               season={season}
               client={client}
               episodes={episodes}
               load={loadSeason}
-              defaultOpen={index === 0}
+              loadError={seasonErrors[season.Id]}
+              defaultOpen={season.Id === defaultSeasonId}
             />
           ))}
         </section>
       )}
 
+      {isEpisode && currentSeason && (
+        <section className="seasons episode-season" aria-label={`Episodes in ${currentSeason.Name}`}>
+          <div className="seasons-heading">
+            <div>
+              <div className="page-eyebrow">Keep watching</div>
+              <h2>{currentSeason.Name || item.SeasonName || "This season"}</h2>
+            </div>
+            <Link className="season-series-link" to={`/item/${seriesParent?.Id || item.SeriesId}`}>
+              View every season
+            </Link>
+          </div>
+          <SeasonBlock
+            season={currentSeason}
+            client={client}
+            episodes={episodes}
+            load={loadSeason}
+            loadError={seasonErrors[currentSeason.Id]}
+            defaultOpen
+            currentEpisodeId={item.Id}
+          />
+        </section>
+      )}
+
       {playing && (
         <Player
+          key={playing.Id}
           item={playing}
+          nextItem={nextEpisode}
+          onPlayNext={playNext}
           // A series autoplays one of *its* episodes, so resume from that
           // episode's own position, not the series' (nonexistent) one.
           initialPosition={
@@ -230,8 +334,9 @@ export function Detail() {
             // Drop ?play=1 — otherwise closing the player re-runs autoplay on
             // the very next render and the player immediately opens again.
             if (params.get("play")) {
-              params.delete("play");
-              setParams(params, { replace: true });
+              const nextParams = new URLSearchParams(params);
+              nextParams.delete("play");
+              setParams(nextParams, { replace: true });
             }
             setPlaying(null);
             retry();
@@ -242,7 +347,7 @@ export function Detail() {
   );
 }
 
-function SeasonBlock({ season, client, episodes, load, defaultOpen = false }) {
+function SeasonBlock({ season, client, episodes, load, loadError, defaultOpen = false, currentEpisodeId }) {
   const [open, setOpen] = useState(defaultOpen);
   const eps = episodes[season.Id];
   const seasonName = season.SeasonName || season.Name || "Season";
@@ -287,7 +392,12 @@ function SeasonBlock({ season, client, episodes, load, defaultOpen = false }) {
 
       {open && (
         <div className="episode-list">
-          {eps === undefined ? (
+          {loadError ? (
+            <div className="season-empty season-error">
+              <span>{loadError.message || "This season could not be loaded."}</span>
+              <button className="btn" onClick={() => load(season.Id)}>Try again</button>
+            </div>
+          ) : eps === undefined ? (
             <div className="season-loading" role="status">
               <div className="spinner" />
               <span>Loading this season</span>
@@ -296,7 +406,7 @@ function SeasonBlock({ season, client, episodes, load, defaultOpen = false }) {
             <div className="season-empty">No episodes are available in this season.</div>
           ) : (
             eps.map((ep) => (
-              <EpisodeCard key={ep.Id} episode={ep} client={client} />
+              <EpisodeCard key={ep.Id} episode={ep} client={client} current={ep.Id === currentEpisodeId} />
             ))
           )}
         </div>
@@ -305,7 +415,7 @@ function SeasonBlock({ season, client, episodes, load, defaultOpen = false }) {
   );
 }
 
-function EpisodeCard({ episode, client }) {
+function EpisodeCard({ episode, client, current = false }) {
   const position = episode.UserData?.PlaybackPositionTicks || 0;
   const runtime = episode.RunTimeTicks || 0;
   const progress = runtime > 0 ? Math.min(1, position / runtime) : 0;
@@ -315,7 +425,7 @@ function EpisodeCard({ episode, client }) {
     : "";
 
   return (
-    <article className="episode-card">
+    <article className={`episode-card ${current ? "episode-card-current" : ""}`}>
       <Link className="episode-art" to={`/item/${episode.Id}?play=1`} aria-label={`Play ${episode.Name}`}>
         {art ? (
           <img src={art} alt="" loading="lazy" />
@@ -337,6 +447,7 @@ function EpisodeCard({ episode, client }) {
       <div className="episode-copy">
         <div className="episode-kicker">
           <span>Episode {episode.IndexNumber || "–"}</span>
+          {current && <span className="episode-current">Now viewing</span>}
           {watched && <span className="episode-watched">Watched</span>}
         </div>
         <Link className="episode-title" to={`/item/${episode.Id}`}>{episode.Name || "Untitled episode"}</Link>

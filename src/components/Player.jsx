@@ -45,7 +45,7 @@ function savePrefs(patch) {
  * This is a full-screen overlay, not a route — so closing it returns to the
  * exact page and scroll position you came from.
  */
-export function Player({ item, initialPosition = 0, onClose }) {
+export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext, onClose }) {
   const { client } = useSession();
   const containerRef = useRef(null);
   const videoRef = useRef(null);
@@ -90,6 +90,7 @@ export function Player({ item, initialPosition = 0, onClose }) {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isPiP, setIsPiP] = useState(false);
   const [scrubFrac, setScrubFrac] = useState(null);
+  const [nextPromptDismissed, setNextPromptDismissed] = useState(false);
 
 
   function isVideo(it) {
@@ -887,7 +888,10 @@ export function Player({ item, initialPosition = 0, onClose }) {
         onTimeUpdate={onTime}
         onDurationChange={() => setDuration(videoRef.current?.duration || 0)}
         onLoadedMetadata={() => setDuration(videoRef.current?.duration || 0)}
-        onEnded={() => onClose()}
+        onEnded={() => {
+          if (nextItem && onPlayNext) onPlayNext();
+          else onClose();
+        }}
         onDoubleClick={toggleFullscreen}
         onError={() => {
           if (hlsRef.current) return; // hls handles its own errors
@@ -916,6 +920,33 @@ export function Player({ item, initialPosition = 0, onClose }) {
             Close
           </button>
         </div>
+      )}
+
+      {nextItem && duration > 0 && duration - current <= 30 && !nextPromptDismissed && !error && (
+        <aside className="player-next" aria-label="Next episode">
+          <div className="player-next-art" aria-hidden="true">
+            {nextItem.PrimaryImageAspectRatio ? (
+              <img src={client.image(nextItem, "Primary", { w: 360, h: 203, q: 82 })} alt="" />
+            ) : (
+              <span>E{nextItem.IndexNumber ?? "–"}</span>
+            )}
+          </div>
+          <div className="player-next-copy">
+            <span>Up next</span>
+            <b>{nextItem.Name || "Next episode"}</b>
+            <small>
+              {nextItem.SeasonName || `Season ${nextItem.ParentIndexNumber ?? "–"}`} · Episode {nextItem.IndexNumber ?? "–"}
+            </small>
+          </div>
+          <div className="player-next-actions">
+            <button className="btn btn-primary" onClick={onPlayNext}>
+              Play next
+            </button>
+            <button className="player-next-dismiss" onClick={() => setNextPromptDismissed(true)}>
+              Watch credits
+            </button>
+          </div>
+        </aside>
       )}
 
       <div className="player-bottom">

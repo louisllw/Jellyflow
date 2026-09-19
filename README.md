@@ -57,17 +57,17 @@ Each experimental build also gets an immutable `experimental-sha-<commit>` tag f
 ## Features
 
 - Home shelves for continue watching, up next and new additions, with a rotating library hero.
-- Full-library browsing, filtering, sorting, pagination and instant search.
-- Movie and series details with redesigned seasons, episodes, cast and watch progress.
+- Full-library browsing, filtering, sorting, pagination and top-level search for shows, movies and live TV.
+- Movie, series and episode details with season navigation, previous/next episode links, cast and watch progress.
 - Live TV guide, programme details, channel favourites, recording controls and recordings library.
-- Responsive HLS player with resume, seek, volume, mobile controls, keyboard shortcuts and progress reporting.
+- Responsive HLS player with resume, seek, next-episode prompts and automatic advancement, volume, mobile controls, keyboard shortcuts and progress reporting.
 - Installable PWA with a standalone app experience and privacy-safe shell caching.
 - Runtime-configurable server connection, responsive navigation and reduced-motion support.
 
 ## Known beta limitations
 
 - Playback currently needs broader capability-aware negotiation and codec coverage.
-- Automatic next episode and a playback queue are not implemented.
+- Queue editing and alternate play-order controls are not implemented; episode playback currently follows library season/episode order.
 - General favourites and manual watched/unwatched controls are incomplete.
 - Music views, casting, SyncPlay and downloads are incomplete.
 - User-entered servers connect directly from the browser and must allow Jellyflow through CORS. An HTTPS Jellyflow page also requires an HTTPS user-entered Jellyfin endpoint. Setting `JELLYFIN_URL` uses the same-origin proxy and avoids both restrictions.

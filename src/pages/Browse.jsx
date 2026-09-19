@@ -48,7 +48,6 @@ export function Browse() {
   }, [params]);
   const [sort, setSort] = useState("recent");
   const [items, setItems] = useState(undefined);
-  const [start, setStart] = useState(0);
   const [total, setTotal] = useState(null);
   const [error, setError] = useState(null);
   const [tick, setTick] = useState(0);
@@ -67,7 +66,6 @@ export function Browse() {
     let alive = true;
     setItems(undefined);
     setError(null);
-    setStart(0);
     (async () => {
       try {
         const out = await client.items({
@@ -96,7 +94,6 @@ export function Browse() {
 
   const loadMore = async () => {
     if (!items || loadingMore) return;
-    setStart(items.length);
     setLoadingMore(true);
     try {
       const out = await client.items({

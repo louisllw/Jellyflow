@@ -2,7 +2,7 @@
 // file) — the browser only re-checks the worker when sw.js's own bytes
 // differ, so an unbumped name can leave already-installed clients on a
 // stale manifest/icon set indefinitely.
-const CACHE_NAME = "jellyflow-shell-v0.1.0-beta.5";
+const CACHE_NAME = "jellyflow-shell-v0.1.0-experimental-1";
 const SHELL_URL = "/";
 const PRECACHE = [
   SHELL_URL,

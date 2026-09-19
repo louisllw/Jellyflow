@@ -4,7 +4,7 @@ import { useSession } from "../state/Session.jsx";
 import { Loading, ErrorBox } from "../components/Cards.jsx";
 import { Player } from "../components/Player.jsx";
 import { fmtRuntimeTicks, ticksToSeconds, typeLabel, looksPlayable, isLiveTv } from "../api/utils.js";
-import { playActionLabel, playbackExitPath } from "../components/playbackState.js";
+import { isPlaybackComplete, playActionLabel, playbackExitPath } from "../components/playbackState.js";
 
 /**
  * Detail — the single most important screen.
@@ -547,7 +547,7 @@ function EpisodeCard({ episode, client, current = false }) {
   const position = episode.UserData?.PlaybackPositionTicks || 0;
   const runtime = episode.RunTimeTicks || 0;
   const progress = runtime > 0 ? Math.min(1, position / runtime) : 0;
-  const watched = Boolean(episode.UserData?.Played);
+  const watched = isPlaybackComplete(episode);
   const art = episode.PrimaryImageAspectRatio
     ? client.image(episode, "Primary", { w: 560, h: 315, q: 82 })
     : "";

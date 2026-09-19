@@ -9,6 +9,17 @@ test("completed playable media uses the Watched action label", () => {
 
 test("unfinished media retains resume and play labels", () => {
   assert.equal(playActionLabel({ Type: "Movie", UserData: { Played: false } }, { resumePosition: 125 }), "Resume at 2:05");
+  assert.equal(
+    playActionLabel({ Type: "Movie", UserData: { Played: true, PlaybackPositionTicks: 125 * 10_000_000 } }),
+    "Resume at 2:05",
+  );
+  assert.equal(
+    playActionLabel(
+      { Type: "Episode", UserData: { Played: true } },
+      { resumePosition: 125 },
+    ),
+    "Resume at 2:05",
+  );
   assert.equal(playActionLabel({ Type: "Movie" }), "Play");
   assert.equal(playActionLabel({ Type: "Series" }), "Play next episode");
   assert.equal(playActionLabel({ Type: "Series" }, { seriesLabel: "Continue the series" }), "Continue the series");

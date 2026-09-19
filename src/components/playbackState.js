@@ -1,9 +1,22 @@
-import { fmtClock } from "../api/utils.js";
+import { fmtClock, ticksToSeconds } from "../api/utils.js";
 
-export function playActionLabel(item, { resumePosition = 0, seriesLabel = "Play next episode" } = {}) {
+export function playbackPosition(item, resumePosition) {
+  if (Number.isFinite(resumePosition)) return resumePosition;
+  return ticksToSeconds(item?.UserData?.PlaybackPositionTicks);
+}
+
+export function isPlaybackComplete(item, { resumePosition } = {}) {
+  const position = playbackPosition(item, resumePosition);
+  return Boolean(item?.UserData?.Played) && position <= 30;
+}
+
+export function playActionLabel(item, { resumePosition, seriesLabel = "Play next episode" } = {}) {
   if (item?.Type === "Series") return seriesLabel;
-  if (item?.UserData?.Played) return "Watched";
-  if (resumePosition > 30) return `Resume at ${fmtClock(resumePosition)}`;
+  const position = playbackPosition(item, resumePosition);
+  // A current resume point wins over an old Played flag. This matters when a
+  // viewer starts rewatching something Jellyfin still considers watched.
+  if (position > 30) return `Resume at ${fmtClock(position)}`;
+  if (isPlaybackComplete(item, { resumePosition: position })) return "Watched";
   return "Play";
 }
 

@@ -93,6 +93,7 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
   const activePointerIdRef = useRef(null);
   const scrubRafRef = useRef(null);
   const pendingScrubFracRef = useRef(null);
+  const completedRef = useRef(false);
   const prefs = useMemo(() => loadPrefs(), []);
 
   const [playing, setPlaying] = useState(false);
@@ -818,12 +819,10 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
       const v = videoRef.current;
       if (!v || !item) return;
       const ms = item.MediaSources?.[0]?.Id;
-      const d = v.duration;
       const finalPosition = Math.max(lastPositionRef.current || 0, v.currentTime || 0);
-      const nearlyDone = d > 0 && finalPosition / d > 0.9;
       const watchedEnough = finalPosition > 15;
       if (isLiveTv(item)) return;
-      if (nearlyDone) {
+      if (completedRef.current) {
         client.markPlayed(item.Id, { mediaSourceId: ms });
       } else if (watchedEnough) {
         report(finalPosition);
@@ -1425,6 +1424,8 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
         onDurationChange={() => setDuration(videoRef.current?.duration || 0)}
         onLoadedMetadata={() => setDuration(videoRef.current?.duration || 0)}
         onEnded={() => {
+          completedRef.current = true;
+          lastPositionRef.current = videoRef.current?.duration || lastPositionRef.current;
           if (nextItem && onPlayNext) onPlayNext();
           else onClose();
         }}

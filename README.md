@@ -41,6 +41,19 @@ docker compose up -d
 
 Both `linux/amd64` and `linux/arm64` images are published, covering common servers and Apple Silicon Macs.
 
+### Release channels
+
+- `latest` is the current tested release and changes only when a GitHub release is published.
+- `experimental` is rebuilt from the `experimental` branch for early testing and may be unstable.
+
+To opt into experimental builds, replace the image tag in your Docker command or Compose file:
+
+```sh
+ghcr.io/louisllw/jellyflow:experimental
+```
+
+Each experimental build also gets an immutable `experimental-sha-<commit>` tag for rollback. Moving between channels requires an explicit image-tag change; experimental builds never update `latest`.
+
 ## Features
 
 - Home shelves for continue watching, up next and new additions, with a rotating library hero.

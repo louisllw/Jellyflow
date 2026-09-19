@@ -30,6 +30,7 @@ Test against a Jellyfin server you are authorised to use. Do not commit `.env` f
 
 ## Pull requests
 
+- Target ongoing or higher-risk work at the `experimental` branch first. `main` remains the tested release line.
 - Keep each pull request focused and explain the user-facing change.
 - Describe how the change was tested, including mobile testing where relevant.
 - Preserve accessibility, keyboard control, reduced-motion support and responsive layouts.

@@ -4,10 +4,14 @@ import { useSession } from "../state/Session.jsx";
 import { mediaAuthHeader } from "../api/jellyfin.js";
 import { fmtClock, isAudioOnly, isLiveTv, secondsToTicks, ticksToSeconds } from "../api/utils.js";
 import { IconBack, IconSettings, IconInfo } from "./Icons.jsx";
+import { combineHlsMasters } from "./adaptiveManifest.js";
 import {
+  AUTO_CEILING_KEY,
   AUTO_QUALITY_OPTIONS,
   initialAutoQuality,
   lowerQualityKey,
+  qualityProfile,
+  sourceFitsProfile,
 } from "./playerQuality.js";
 
 const QUALITY_OPTIONS = [
@@ -155,6 +159,7 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
     let retryTimer;
     let sessionStarted = false;
     let playSessionId = null;
+    let adaptiveManifestUrl = null;
     const untrackFns = [];
 
     // Re-runs whenever the quality choice changes, too. The previous effect's
@@ -164,8 +169,9 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
     const resumeAt = Number.isFinite(lastPositionRef.current)
       ? lastPositionRef.current
       : initialPosition;
-    const selectedQuality = quality === "auto" ? autoQuality : quality;
-    const opt = QUALITY_OPTIONS.find((q) => q.key === selectedQuality);
+    const selectedQuality = quality === "auto" ? AUTO_CEILING_KEY : quality;
+    const opt = qualityProfile(selectedQuality);
+    const autoStartProfile = qualityProfile(autoQuality);
     const mediaSourceId = item?.MediaSources?.[0]?.Id;
     lastPositionRef.current = resumeAt;
     resumeTargetRef.current = resumeAt;
@@ -320,13 +326,16 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
         // Original remains the explicit no-transcode choice. Fixed qualities
         // may direct-play when the source fits their limit; Auto only does so
         // with ample headroom and can promote itself to adaptive HLS on stalls.
-        const sourceBitrate = info.source?.Bitrate || item?.MediaSources?.[0]?.Bitrate || 0;
+        const playbackSource = info.source || item?.MediaSources?.[0];
+        const sourceBitrate = playbackSource?.Bitrate || 0;
         const autoDirectPlayFits =
           quality === "auto" &&
           !forceAdaptive &&
           sourceBitrate > 0 &&
-          sourceBitrate <= (opt?.maxBitrate || 0) * 0.7;
-        if (info.source?.SupportsDirectPlay && (quality !== "auto" || autoDirectPlayFits)) mode = "direct";
+          sourceFitsProfile(playbackSource, autoStartProfile) &&
+          sourceBitrate <= (autoStartProfile?.maxBitrate || 0) * 0.7;
+        const fixedDirectPlayFits = quality !== "auto" && sourceFitsProfile(playbackSource, opt);
+        if (info.source?.SupportsDirectPlay && (autoDirectPlayFits || fixedDirectPlayFits)) mode = "direct";
       }
       playSessionIdRef.current = playSessionId;
 
@@ -351,12 +360,41 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
       }
 
       if (mode === "hls") {
-        const url = client.streamUrl(item, {
+        let url = client.streamUrl(item, {
           maxBitrate: opt?.maxBitrate,
           maxHeight: opt?.maxHeight,
           playSessionId,
           adaptive: quality === "auto",
         });
+        if (quality === "auto") {
+          try {
+            const profiles = AUTO_QUALITY_OPTIONS.filter((profile) => profile.maxHeight <= opt.maxHeight);
+            const masters = await Promise.all(
+              profiles.map(async (profile) => {
+                const masterUrl = client.streamUrl(item, {
+                  maxBitrate: profile.maxBitrate,
+                  maxHeight: profile.maxHeight,
+                  playSessionId,
+                  adaptive: true,
+                });
+                const response = await fetch(masterUrl, {
+                  headers: { Authorization: mediaAuthHeader(client.token) },
+                });
+                if (!response.ok) throw new Error(`Adaptive manifest request failed (${response.status}).`);
+                return { url: masterUrl, text: await response.text() };
+              }),
+            );
+            if (cancelled) return;
+            const combined = combineHlsMasters(masters);
+            adaptiveManifestUrl = URL.createObjectURL(
+              new Blob([combined], { type: "application/vnd.apple.mpegurl" }),
+            );
+            url = adaptiveManifestUrl;
+          } catch {
+            // A restrictive proxy may reject the preparatory manifest reads.
+            // The ordinary Jellyfin adaptive master is still a safe fallback.
+          }
+        }
         setStats((s) => ({
           ...(s || {}),
           playMethod: "Transcode (HLS)",
@@ -372,13 +410,15 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
           // chosen at startup. After the first fragments it continuously
           // measures real throughput and switches variants inside this same
           // MediaSource, without replacing the video or discarding its buffer.
-          ...(quality === "auto" && opt?.maxBitrate
-            ? { abrEwmaDefaultEstimate: Math.max(500_000, Math.floor(opt.maxBitrate * 0.7)) }
+          ...(quality === "auto" && autoStartProfile?.maxBitrate
+            ? { abrEwmaDefaultEstimate: Math.max(500_000, Math.floor(autoStartProfile.maxBitrate * 0.7)) }
             : {}),
           // Some servers reject the query-string api_key on HLS requests and
           // require the full Authorization header instead — hls.js can't rely
           // on <video src> query params, so we set it on every XHR it makes.
-          xhrSetup: (xhr) => xhr.setRequestHeader("Authorization", mediaAuthHeader(client.token)),
+          xhrSetup: (xhr, requestUrl) => {
+            if (/^https?:/i.test(requestUrl)) xhr.setRequestHeader("Authorization", mediaAuthHeader(client.token));
+          },
         });
         hlsRef.current = hls;
         hls.loadSource(url);
@@ -480,6 +520,7 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
         hlsRef.current.destroy();
         hlsRef.current = null;
       }
+      if (adaptiveManifestUrl) URL.revokeObjectURL(adaptiveManifestUrl);
       untrackFns.forEach((fn) => fn());
       clearTimeout(retryTimer);
       clearTimeout(reportTimer.current);
@@ -1203,7 +1244,7 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
   const mediaStreams = useMemo(() => item?.MediaSources?.[0]?.MediaStreams || [], [item]);
   const videoStream = useMemo(() => mediaStreams.find((s) => s.Type === "Video"), [mediaStreams]);
   const audioStream = useMemo(() => mediaStreams.find((s) => s.Type === "Audio"), [mediaStreams]);
-  const autoProfile = AUTO_QUALITY_OPTIONS.find((option) => option.key === autoQuality);
+  const autoProfile = qualityProfile(AUTO_CEILING_KEY);
   const activeAutoHeight = stats?.level?.height || stats?.videoHeight || autoProfile?.maxHeight;
   const chapters = useMemo(
     () =>

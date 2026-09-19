@@ -82,7 +82,7 @@ test("playback session stop targets the matching session", async () => {
   });
 });
 
-test("item details request playback sources and trickplay metadata", async () => {
+test("item details request playback sources, chapters and trickplay metadata", async () => {
   const calls = [];
   const previousFetch = globalThis.fetch;
   globalThis.fetch = async (url) => {
@@ -96,7 +96,7 @@ test("item details request playback sources and trickplay metadata", async () =>
   }
   const url = new URL(calls[0]);
   assert.equal(url.searchParams.get("UserId"), "user");
-  assert.equal(url.searchParams.get("Fields"), "MediaSources,MediaStreams,Trickplay");
+  assert.equal(url.searchParams.get("Fields"), "MediaSources,MediaStreams,Chapters,Trickplay");
 });
 
 test("trickplay tile URL includes the selected media source", () => {
@@ -105,7 +105,7 @@ test("trickplay tile URL includes the selected media source", () => {
   assert.equal(url.searchParams.get("MediaSourceId"), "source");
 });
 
-test("media segments request only intro markers", async () => {
+test("media segments use Jellyfin's repeated segment-type query format", async () => {
   const calls = [];
   const previousFetch = globalThis.fetch;
   globalThis.fetch = async (url) => {
@@ -116,14 +116,14 @@ test("media segments request only intro markers", async () => {
     });
   };
   try {
-    const segments = await client().mediaSegments("source", ["Intro"]);
+    const segments = await client().mediaSegments("source", ["Intro", "Recap"]);
     assert.equal(segments.length, 1);
   } finally {
     globalThis.fetch = previousFetch;
   }
   const url = new URL(calls[0]);
   assert.equal(url.pathname, "/MediaSegments/source");
-  assert.equal(url.searchParams.get("IncludeSegmentTypes"), "Intro");
+  assert.deepEqual(url.searchParams.getAll("includeSegmentTypes"), ["Intro", "Recap"]);
 });
 
 test("playback info preserves Jellyfin live-stream negotiation fields", async () => {

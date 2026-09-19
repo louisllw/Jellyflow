@@ -107,7 +107,12 @@ function qs(params) {
   const parts = [];
   for (const [k, v] of Object.entries(params || {})) {
     if (v === undefined || v === null || v === "") continue;
-    parts.push(`${encodeURIComponent(k)}=${encodeURIComponent(v)}`);
+    const values = Array.isArray(v) ? v : [v];
+    values.forEach((value) => {
+      if (value !== undefined && value !== null && value !== "") {
+        parts.push(`${encodeURIComponent(k)}=${encodeURIComponent(value)}`);
+      }
+    });
   }
   return parts.length ? "?" + parts.join("&") : "";
 }
@@ -352,7 +357,7 @@ export class Jellyfin {
     // playback position. BackdropImageTags is part of the returned DTO.
     return this._get(`/Items/${id}`, {
       UserId: this.userId,
-      Fields: "MediaSources,MediaStreams,Trickplay",
+      Fields: "MediaSources,MediaStreams,Chapters,Trickplay",
       ...extra,
     });
   }
@@ -360,7 +365,7 @@ export class Jellyfin {
   async mediaSegments(itemId, includeSegmentTypes = ["Recap", "Intro", "Commercial", "Outro"]) {
     try {
       const result = await this._get(`/MediaSegments/${itemId}`, {
-        IncludeSegmentTypes: includeSegmentTypes.join(","),
+        includeSegmentTypes,
       });
       return result?.Items || [];
     } catch (error) {

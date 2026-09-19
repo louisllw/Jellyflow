@@ -1,6 +1,20 @@
 import { ticksToSeconds } from "../api/utils.js";
 
-const INTRO_CHAPTER_NAMES = new Set(["intro", "introduction", "opening", "opening credits", "op"]);
+const INTRO_CHAPTER_NAMES = new Set([
+  "intro",
+  "intro start",
+  "intro begin",
+  "introduction",
+  "introduction start",
+  "opening",
+  "opening start",
+  "opening credits",
+  "opening credits start",
+  "op",
+]);
+const INTRO_END_CHAPTER_NAMES = new Set(["intro end", "introduction end", "opening end", "opening credits end"]);
+const INTRO_CHAPTER_PATTERN = /(^|\s)(intro|introduction|op|opening(?:\s+credits)?)(?:\s|:|$)/i;
+const INTRO_END_CHAPTER_PATTERN = /(^|\s)(intro|introduction|op|opening(?:\s+credits)?)(?:\s|:)+end(?:\s|:|$)/i;
 const SEGMENT_TYPES = {
   1: "Commercial",
   3: "Recap",
@@ -45,10 +59,17 @@ export function findIntroSegment(mediaSegments = [], chapters = [], duration = 0
     .map((chapter) => ({ name: String(chapter?.Name || "").trim().toLowerCase(), time: ticksToSeconds(chapter?.StartPositionTicks) }))
     .filter((chapter) => Number.isFinite(chapter.time))
     .sort((a, b) => a.time - b.time);
-  const introIndex = ordered.findIndex((chapter) => INTRO_CHAPTER_NAMES.has(chapter.name));
+  const introIndex = ordered.findIndex((chapter) => (
+    (INTRO_CHAPTER_NAMES.has(chapter.name) || INTRO_CHAPTER_PATTERN.test(chapter.name)) &&
+    !INTRO_END_CHAPTER_PATTERN.test(chapter.name)
+  ));
   if (introIndex < 0) return null;
   const start = ordered[introIndex].time;
-  const end = ordered[introIndex + 1]?.time;
+  const following = ordered[introIndex + 1];
+  const explicitEnd = following && (
+    INTRO_END_CHAPTER_NAMES.has(following.name) || INTRO_END_CHAPTER_PATTERN.test(following.name)
+  ) ? following.time : null;
+  const end = explicitEnd ?? following?.time;
   const latestReliableStart = Math.min(duration * 0.25, 600);
   if (start > latestReliableStart || !validIntro(start, end, duration) || end - start > 300) return null;
   return { start, end, source: "chapter" };
@@ -73,6 +94,15 @@ export function findSkippableSegment(mediaSegments = [], chapters = [], duration
   const intro = findIntroSegment(mediaSegments, chapters, duration);
   if (intro && current >= intro.start && current < intro.end - 1) return { ...intro, type: "Intro" };
   return null;
+}
+
+export async function loadPlaybackSegments(client, item, includeSegmentTypes = ["Recap", "Intro", "Commercial", "Outro"]) {
+  const itemIds = [...new Set([item?.MediaSources?.[0]?.Id, item?.Id].filter(Boolean))];
+  for (const itemId of itemIds) {
+    const segments = await client.mediaSegments(itemId, includeSegmentTypes);
+    if (segments.length) return segments;
+  }
+  return [];
 }
 
 function humanizeReason(reason) {

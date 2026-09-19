@@ -12,7 +12,12 @@ import {
   connectionBandwidthEstimate,
   levelForBandwidth,
 } from "./adaptivePlayback.js";
-import { episodePlaybackHeading, findSkippableSegment, transcodeReasons } from "./playbackMetadata.js";
+import {
+  episodePlaybackHeading,
+  findSkippableSegment,
+  loadPlaybackSegments,
+  transcodeReasons,
+} from "./playbackMetadata.js";
 import {
   AUTO_CEILING_KEY,
   AUTO_QUALITY_OPTIONS,
@@ -140,6 +145,7 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
   const [subtitleBackground, setSubtitleBackground] = useState(prefs.subtitleBackground || "shadow");
   const [subtitleDelay, setSubtitleDelay] = useState(prefs.subtitleDelay || 0);
   const [mediaSegments, setMediaSegments] = useState([]);
+  const [segmentStatus, setSegmentStatus] = useState("Not checked");
 
 
   function isVideo(it) {
@@ -688,16 +694,27 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
   useEffect(() => {
     if (!item?.Id || isLiveTv(item)) {
       setMediaSegments([]);
+      setSegmentStatus("Not available");
       return undefined;
     }
     let alive = true;
-    const segmentItemId = item.MediaSources?.[0]?.Id || item.Id;
-    client.mediaSegments(segmentItemId, ["Recap", "Intro", "Commercial", "Outro"])
+    setSegmentStatus("Checking…");
+    loadPlaybackSegments(client, item)
       .then((segments) => {
-        if (alive) setMediaSegments(segments);
+        if (!alive) return;
+        setMediaSegments(segments);
+        setSegmentStatus(
+          segments.length
+            ? `${segments.length} from Jellyfin`
+            : item.Chapters?.length
+              ? `${item.Chapters.length} chapter markers`
+              : "None supplied",
+        );
       })
       .catch(() => {
-        if (alive) setMediaSegments([]);
+        if (!alive) return;
+        setMediaSegments([]);
+        setSegmentStatus(item.Chapters?.length ? `${item.Chapters.length} chapter markers` : "Segment API failed");
       });
     return () => {
       alive = false;
@@ -2001,6 +2018,10 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
                 <div className="player-stats-row">
                   <span>Buffered ahead</span>
                   <b>{stats?.bufferedAhead != null ? `${stats.bufferedAhead.toFixed(1)}s` : "—"}</b>
+                </div>
+                <div className="player-stats-row">
+                  <span>Skip markers</span>
+                  <b>{segmentStatus}</b>
                 </div>
                 <div className="player-stats-row">
                   <span>Dropped frames</span>

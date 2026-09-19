@@ -4,6 +4,7 @@ import {
   episodePlaybackHeading,
   findIntroSegment,
   findSkippableSegment,
+  loadPlaybackSegments,
   transcodeReasons,
 } from "../src/components/playbackMetadata.js";
 
@@ -27,6 +28,39 @@ test("uses an exact, early chapter marker only when it has a safe end", () => {
   );
   assert.equal(findIntroSegment([], [{ Name: "An introduction", StartPositionTicks: 0 }], 1800), null);
   assert.equal(findIntroSegment([], [{ Name: "Intro", StartPositionTicks: ticks(700) }, { Name: "Part", StartPositionTicks: ticks(760) }], 1800), null);
+});
+
+test("supports paired Intro Start and Intro End chapter markers", () => {
+  assert.deepEqual(
+    findIntroSegment([], [
+      { Name: "Intro Start", StartPositionTicks: ticks(8) },
+      { Name: "Intro End", StartPositionTicks: ticks(76) },
+      { Name: "Chapter 1", StartPositionTicks: ticks(90) },
+    ], 1800),
+    { start: 8, end: 76, source: "chapter" },
+  );
+  assert.deepEqual(
+    findIntroSegment([], [
+      { Name: "Chapter 1: Intro", StartPositionTicks: ticks(10) },
+      { Name: "Chapter 2", StartPositionTicks: ticks(80) },
+    ], 1800),
+    { start: 10, end: 80, source: "chapter" },
+  );
+});
+
+test("segment lookup retries the library item after an empty media source", async () => {
+  const calls = [];
+  const client = {
+    mediaSegments: async (itemId) => {
+      calls.push(itemId);
+      return itemId === "episode-id" ? [{ Type: "Intro" }] : [];
+    },
+  };
+  assert.deepEqual(
+    await loadPlaybackSegments(client, { Id: "episode-id", MediaSources: [{ Id: "source-id" }] }),
+    [{ Type: "Intro" }],
+  );
+  assert.deepEqual(calls, ["source-id", "episode-id"]);
 });
 
 test("finds recap, commercial and outro media segments at playback time", () => {

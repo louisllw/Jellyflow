@@ -104,3 +104,24 @@ test("trickplay tile URL includes the selected media source", () => {
   assert.equal(url.pathname, "/Videos/item/Trickplay/320/2.jpg");
   assert.equal(url.searchParams.get("MediaSourceId"), "source");
 });
+
+test("media segments request only intro markers", async () => {
+  const calls = [];
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    calls.push(url);
+    return new Response(JSON.stringify({ Items: [{ Type: "Intro", StartTicks: 10, EndTicks: 20 }] }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  try {
+    const segments = await client().mediaSegments("source", ["Intro"]);
+    assert.equal(segments.length, 1);
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+  const url = new URL(calls[0]);
+  assert.equal(url.pathname, "/MediaSegments/source");
+  assert.equal(url.searchParams.get("IncludeSegmentTypes"), "Intro");
+});

@@ -2349,6 +2349,23 @@ img {
   background: rgba(0, 164, 220, 0.12);
 }
 
+.player-quality-btn {
+  display: flex;
+  gap: 6px;
+}
+
+.player-quality-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1;
+  color: var(--ink-dim);
+  white-space: nowrap;
+}
+
+.player-quality-btn.on .player-quality-label {
+  color: inherit;
+}
+
 .player-spacer {
   flex: 1;
 }
@@ -2480,6 +2497,38 @@ img {
   z-index: 6;
 }
 
+.player-skip-intro {
+  position: absolute;
+  right: clamp(18px, 4vw, 56px);
+  bottom: 126px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-height: 44px;
+  padding: 10px 16px;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 9px;
+  background: rgba(8, 10, 22, 0.88);
+  backdrop-filter: blur(14px);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 650;
+  cursor: pointer;
+  box-shadow: 0 14px 38px rgba(0, 0, 0, 0.42);
+}
+
+.player-skip-intro:hover,
+.player-skip-intro:focus-visible {
+  background: rgba(20, 24, 46, 0.96);
+  border-color: rgba(255, 255, 255, 0.48);
+}
+
+.player-skip-intro span:last-child {
+  font-size: 22px;
+  line-height: 0.8;
+}
+
 .player-stats-row {
   display: flex;
   align-items: baseline;
@@ -2491,6 +2540,13 @@ img {
   color: var(--ink);
   font-weight: 500;
   white-space: nowrap;
+}
+
+.player-stats-reason b {
+  max-width: 210px;
+  white-space: normal;
+  text-align: right;
+  line-height: 1.35;
 }
 
 .player-time {
@@ -3585,11 +3641,21 @@ img {
 
   .player-secondary-controls {
     order: 3;
-    justify-content: center;
+    justify-content: safe center;
     gap: 4px;
     width: 100%;
     padding-top: 2px;
     border-top: 1px solid rgba(184, 196, 255, 0.07);
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .player-secondary-controls::-webkit-scrollbar {
+    display: none;
+  }
+
+  .player-secondary-controls > * {
+    flex: 0 0 auto;
   }
 
   .player-stats,
@@ -3622,8 +3688,9 @@ img {
     gap: 0;
   }
 
-  .player-stats-wrap {
-    display: none;
+  .player-skip-intro {
+    right: 12px;
+    bottom: calc(190px + env(safe-area-inset-bottom));
   }
 
   /* Every utility action keeps a proper finger-sized target. */

@@ -310,6 +310,20 @@ export class Jellyfin {
     });
   }
 
+  async mediaSegments(itemId, includeSegmentTypes = ["Intro"]) {
+    try {
+      const result = await this._get(`/MediaSegments/${itemId}`, {
+        IncludeSegmentTypes: includeSegmentTypes.join(","),
+      });
+      return result?.Items || [];
+    } catch (error) {
+      // Media Segments arrived in Jellyfin 10.10. Older servers simply do
+      // not have the endpoint, so chapter metadata remains a safe fallback.
+      if (error instanceof ApiError && error.status === 404) return [];
+      throw error;
+    }
+  }
+
   // The next unwatched episodes of a series — the same data the official
   // client uses for "Next Up" on a series page. One call finds the episode
   // to start with when a whole series (rather than one file) is played.

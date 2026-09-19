@@ -5,6 +5,7 @@ import { mediaAuthHeader } from "../api/jellyfin.js";
 import { fmtClock, isAudioOnly, isLiveTv, secondsToTicks, ticksToSeconds } from "../api/utils.js";
 import { IconBack, IconSettings, IconInfo } from "./Icons.jsx";
 import { combineHlsMasters } from "./adaptiveManifest.js";
+import { findIntroSegment, transcodeReasons } from "./playbackMetadata.js";
 import {
   AUTO_CEILING_KEY,
   AUTO_QUALITY_OPTIONS,
@@ -124,6 +125,7 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
   const [subtitleSize, setSubtitleSize] = useState(prefs.subtitleSize || "normal");
   const [subtitleBackground, setSubtitleBackground] = useState(prefs.subtitleBackground || "shadow");
   const [subtitleDelay, setSubtitleDelay] = useState(prefs.subtitleDelay || 0);
+  const [mediaSegments, setMediaSegments] = useState([]);
 
 
   function isVideo(it) {
@@ -160,6 +162,7 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
     let sessionStarted = false;
     let playSessionId = null;
     let adaptiveManifestUrl = null;
+    let playbackReason = "";
     const untrackFns = [];
 
     // Re-runs whenever the quality choice changes, too. The previous effect's
@@ -336,6 +339,10 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
           sourceBitrate <= (autoStartProfile?.maxBitrate || 0) * 0.7;
         const fixedDirectPlayFits = quality !== "auto" && sourceFitsProfile(playbackSource, opt);
         if (info.source?.SupportsDirectPlay && (autoDirectPlayFits || fixedDirectPlayFits)) mode = "direct";
+        const reasons = transcodeReasons(playbackSource);
+        playbackReason = mode === "direct"
+          ? "Compatible source"
+          : reasons.join(", ") || (info.source?.SupportsDirectPlay ? "Selected quality limit" : "Browser compatibility");
       }
       playSessionIdRef.current = playSessionId;
 
@@ -399,6 +406,9 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
           ...(s || {}),
           playMethod: "Transcode (HLS)",
           autoProfile: quality === "auto" ? opt : null,
+          playbackReason,
+          level: null,
+          bandwidthEstimate: null,
         }));
         const hls = new Hls({
           enableWorker: true,
@@ -499,14 +509,26 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
         v.src = url;
         v.load();
         v.onloadedmetadata = resumeAndPlay;
-        setStats((s) => ({ ...(s || {}), playMethod: "HLS (native)" }));
+        setStats((s) => ({
+          ...(s || {}),
+          playMethod: "HLS (native)",
+          playbackReason,
+          level: null,
+          bandwidthEstimate: null,
+        }));
       } else {
         // Direct / progressive / audio — the server hands back a playable file.
         const url = client.directUrl(item, { audio: isAudioOnly(item), mediaSourceId });
         v.src = url;
         v.load();
         v.onloadedmetadata = resumeAndPlay;
-        setStats((s) => ({ ...(s || {}), playMethod: "Direct play" }));
+        setStats((s) => ({
+          ...(s || {}),
+          playMethod: "Direct play",
+          playbackReason: playbackReason || "Compatible source",
+          level: null,
+          bandwidthEstimate: null,
+        }));
       }
     })();
 
@@ -541,6 +563,25 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [quality, autoQuality, forceAdaptive, reloadNonce]);
+
+  useEffect(() => {
+    if (!item?.Id || isLiveTv(item)) {
+      setMediaSegments([]);
+      return undefined;
+    }
+    let alive = true;
+    const segmentItemId = item.MediaSources?.[0]?.Id || item.Id;
+    client.mediaSegments(segmentItemId, ["Intro"])
+      .then((segments) => {
+        if (alive) setMediaSegments(segments);
+      })
+      .catch(() => {
+        if (alive) setMediaSegments([]);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [client, item]);
 
   // While the stats panel is open, sample the <video> element's own playback
   // quality counters (dropped frames, decoded resolution) a few times a second.
@@ -1246,6 +1287,14 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
   const audioStream = useMemo(() => mediaStreams.find((s) => s.Type === "Audio"), [mediaStreams]);
   const autoProfile = qualityProfile(AUTO_CEILING_KEY);
   const activeAutoHeight = stats?.level?.height || stats?.videoHeight || autoProfile?.maxHeight;
+  const activeStreamBitrate = stats?.level?.bitrate || item?.MediaSources?.[0]?.Bitrate;
+  const activeQualityLabel = quality === "auto"
+    ? `${activeAutoHeight}p`
+    : quality === "2160"
+      ? "4K"
+      : quality === "original"
+        ? "Original"
+        : `${quality}p`;
   const chapters = useMemo(
     () =>
       (item?.Chapters || [])
@@ -1253,6 +1302,11 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
         .filter((c) => duration > 0 && c.time >= 0 && c.time < duration),
     [item, duration],
   );
+  const introSegment = useMemo(
+    () => findIntroSegment(mediaSegments, item?.Chapters || [], duration),
+    [duration, item, mediaSegments],
+  );
+  const canSkipIntro = introSegment && current >= introSegment.start && current < introSegment.end - 1;
   const trickplay = useMemo(() => {
     const sourceId = item?.MediaSources?.[0]?.Id;
     const manifests = item?.Trickplay || {};
@@ -1394,6 +1448,17 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
             <button className="btn" onClick={onClose}>Close</button>
           </div>
         </div>
+      )}
+
+      {canSkipIntro && !error && !showStats && !showQuality && !showSpeed && !showTracks && (
+        <button
+          className="player-skip-intro"
+          onClick={() => seekTo(introSegment.end / duration)}
+          aria-label="Skip intro"
+        >
+          <span>Skip intro</span>
+          <span aria-hidden="true">›</span>
+        </button>
       )}
 
       {nextItem && duration > 0 && duration - current <= 30 && !nextPromptDismissed && !error && (
@@ -1677,13 +1742,17 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
                   <span>Play method</span>
                   <b>{stats?.playMethod || "—"}</b>
                 </div>
+                <div className="player-stats-row player-stats-reason">
+                  <span>Reason</span>
+                  <b>{stats?.playbackReason || "—"}</b>
+                </div>
                 <div className="player-stats-row">
                   <span>Resolution</span>
                   <b>{stats?.videoWidth ? `${stats.videoWidth}×${stats.videoHeight}` : "—"}</b>
                 </div>
                 <div className="player-stats-row">
                   <span>Stream bitrate</span>
-                  <b>{stats?.level?.bitrate ? `${Math.round(stats.level.bitrate / 1000)} kbps` : "—"}</b>
+                  <b>{activeStreamBitrate ? `${Math.round(activeStreamBitrate / 1000)} kbps` : "—"}</b>
                 </div>
                 {quality === "auto" && (
                   <>
@@ -1729,7 +1798,7 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
 
           <div className="player-popover-wrap player-persistent-popover" data-persistent-popover="quality">
             <button
-              className={`player-btn ${showQuality ? "on" : ""}`}
+              className={`player-btn player-quality-btn ${showQuality ? "on" : ""}`}
               onClick={() => {
                 setShowQuality((s) => !s);
                 setShowStats(false);
@@ -1740,6 +1809,7 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
               title={quality === "auto" ? `Auto · ${activeAutoHeight}p` : "Quality"}
             >
               <IconSettings size={19} />
+              <span className="player-quality-label">{activeQualityLabel}</span>
             </button>
             {showQuality && (
               <div className="player-menu" role="menu">

@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0-beta.5 (unreleased)
+## 0.1.0-beta.5 — 2026-09-19
 
 Features:
 

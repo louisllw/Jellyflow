@@ -48,6 +48,7 @@ Both `linux/amd64` and `linux/arm64` images are published, covering common serve
 - Movie and series details with redesigned seasons, episodes, cast and watch progress.
 - Live TV guide, programme details, channel favourites, recording controls and recordings library.
 - Responsive HLS player with resume, seek, volume, mobile controls, keyboard shortcuts and progress reporting.
+- Installable PWA with a standalone app experience and privacy-safe shell caching.
 - Runtime-configurable server connection, responsive navigation and reduced-motion support.
 
 ## Known beta limitations

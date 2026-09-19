@@ -11,6 +11,10 @@ session token is stored in the browser's local storage until sign-out. Proxy
 access logging is disabled so tokens carried in media URLs are not written to
 the container log.
 
+The service worker caches only Jellyflow's static application shell and icons.
+Runtime configuration, Jellyfin API responses, artwork, media and requests to
+user-entered servers are excluded from its cache.
+
 Do not put credentials, API keys, or private server addresses in `.env.example`,
 `public/env-config.js`, screenshots, issues, or commits. Use an untracked `.env`
 file or deployment secret for `JELLYFIN_URL`.

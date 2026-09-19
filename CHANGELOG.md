@@ -1,6 +1,21 @@
 # Changelog
 
-## 0.1.0-beta.4 (unreleased)
+## 0.1.0-beta.5 (unreleased)
+
+Features:
+
+- Jellyflow is now installable as a PWA with standalone display metadata and platform-appropriate icons. Its service worker caches only the application shell; runtime configuration, Jellyfin APIs, artwork, media and authentication data remain network-only.
+
+Bug fixes and refinements:
+
+- Playback no longer transcodes every video to H264/AAC by default. The player now asks Jellyfin (via `PlaybackInfo`/`DeviceProfile` negotiation, built from live codec-support probes) whether this browser can play the source file as-is, and only falls back to a server-side transcode when it actually can't — keeping original quality and codecs (HEVC, VP9, AV1…) whenever the browser supports them, and cutting server transcoding load for files that were already compatible.
+- Playback sessions are now closed out with the server on exit (`Sessions/Playing/Stopped`, carrying the negotiated `PlaySessionId`), instead of leaving an active transcode job to expire on its own timeout.
+- Subtitles and multi-track audio now work during direct play, not just when the server is transcoding to HLS — subtitle tracks are added from the item's own subtitle streams, and audio-track switching uses the browser's native track APIs.
+- Fixed exiting fullscreen (Escape, or the browser's own "press Esc to exit" affordance) closing the whole player instead of just leaving fullscreen — the browser already clears fullscreen state before that same keypress reaches our own key handler, and the close logic didn't know to ignore it.
+- The service worker's shell precache no longer fails atomically: a single missing/flaky asset used to abort install for the whole cache; each file is now cached independently.
+- Service worker registration failures are now logged instead of silently discarded.
+
+## 0.1.0-beta.4 — 2026-09-19
 
 Build fix:
 

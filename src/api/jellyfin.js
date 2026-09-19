@@ -5,6 +5,8 @@
 // `api_key` query parameter instead, because <img> tags and the hls.js XHR
 // pipeline cannot set custom headers.
 
+import { buildDeviceProfile } from "./deviceProfile.js";
+
 const LS_CONFIG = "jellyflow.config.v1";
 const LS_DEVICE = "jellyflow.device";
 const LS_LAST_SERVER = "jellyflow.lastServer";
@@ -409,8 +411,39 @@ export class Jellyfin {
     return url;
   }
 
+  /**
+   * Ask Jellyfin whether this browser can play the source file as-is, or how
+   * it needs to be transcoded if not — instead of assuming a transcode is
+   * always required. Falls back to "must transcode" (a null source) if the
+   * call itself fails, so playback still degrades gracefully.
+   */
+  async getPlaybackInfo(item, { mediaSourceId, maxBitrate, startPositionTicks = 0 } = {}) {
+    const id = typeof item === "object" ? item && item.Id : item;
+    if (!id) return { source: null, playSessionId: null };
+    const ms =
+      mediaSourceId || (typeof item === "object" ? item.MediaSources?.[0]?.Id : undefined);
+    try {
+      const data = await this._req(`/Items/${id}/PlaybackInfo`, {
+        method: "POST",
+        body: {
+          UserId: this.userId,
+          MediaSourceId: ms,
+          MaxStreamingBitrate: maxBitrate,
+          StartTimeTicks: startPositionTicks,
+          AutoOpenLiveStream: true,
+          DeviceProfile: buildDeviceProfile(),
+        },
+      });
+      const sources = data?.MediaSources || [];
+      const source = sources.find((s) => !ms || s.Id === ms) || sources[0] || null;
+      return { source, playSessionId: data?.PlaySessionId || null };
+    } catch {
+      return { source: null, playSessionId: null };
+    }
+  }
+
   /** HLS master playlist URL (Jellyfin transcodes to HLS on the server). */
-  streamUrl(item, { mediaSourceId, maxBitrate, maxHeight } = {}) {
+  streamUrl(item, { mediaSourceId, maxBitrate, maxHeight, playSessionId } = {}) {
     const id = typeof item === "object" ? item && item.Id : item;
     if (!id) return "";
     const source = typeof item === "object" ? item.MediaSources?.[0] : undefined;
@@ -428,9 +461,13 @@ export class Jellyfin {
     const audioBitrate = Math.min(192_000, Math.max(96_000, Math.floor(totalBitrate / 8)));
     const videoBitrate = Math.max(500_000, totalBitrate - audioBitrate);
 
+    // This is the fallback path once getPlaybackInfo has already ruled out
+    // direct play — H264/AAC is the one transcode target virtually every
+    // browser can play, so it stays fixed rather than negotiated further.
     return `${this.serverUrl}/Videos/${id}/master.m3u8${qs({
       api_key: this.token,
       MediaSourceId: ms,
+      PlaySessionId: playSessionId,
       VideoCodec: "h264",
       AudioCodec: "aac",
       VideoBitrate: videoBitrate,
@@ -471,24 +508,26 @@ export class Jellyfin {
     }).catch(() => {});
   }
 
-  reportProgress(itemId, { positionTicks, mediaSourceId } = {}) {
+  reportProgress(itemId, { positionTicks, mediaSourceId, playSessionId } = {}) {
     return this._req("/Sessions/Playing/Progress", {
       method: "POST",
       body: {
         ItemId: itemId,
         PositionTicks: positionTicks,
         MediaSourceId: mediaSourceId,
+        PlaySessionId: playSessionId,
       },
     }).catch(() => {});
   }
 
-  stopPlayback(itemId, { positionTicks, mediaSourceId } = {}) {
+  stopPlayback(itemId, { positionTicks, mediaSourceId, playSessionId } = {}) {
     return this._req("/Sessions/Playing/Stopped", {
       method: "POST",
       body: {
         ItemId: itemId,
         PositionTicks: positionTicks,
         MediaSourceId: mediaSourceId,
+        PlaySessionId: playSessionId,
       },
     }).catch(() => {});
   }

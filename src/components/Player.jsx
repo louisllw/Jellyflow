@@ -53,6 +53,8 @@ export function Player({ item, initialPosition = 0, onClose }) {
   const reportTimer = useRef(null);
   const statsTimer = useRef(null);
   const idleTimer = useRef(null);
+  const playSessionIdRef = useRef(null);
+  const justExitedFsRef = useRef(false);
   const prefs = useMemo(() => loadPrefs(), []);
 
   const [playing, setPlaying] = useState(false);
@@ -83,10 +85,12 @@ export function Player({ item, initialPosition = 0, onClose }) {
   }
 
   // hls.js (MSE) is the reliable path in every browser that supports it —
-  // native HTML5 HLS is only for browsers without MSE (Safari/iOS), and
-  // direct-play is a last resort since the server file may use a codec or
-  // container the browser can't decode at all.
-  function playbackMode() {
+  // native HTML5 HLS is only for browsers without MSE (Safari/iOS). Both are
+  // only the *fallback*: the loading effect below asks Jellyfin first
+  // whether this browser can play the source as-is and upgrades to direct
+  // play when it can. "original" is an explicit user override that skips
+  // that negotiation and always plays the raw file.
+  function fallbackMode() {
     if (!isVideo(item)) return "direct";
     if (quality === "original") return "direct";
     if (Hls.isSupported()) return "hls";
@@ -95,14 +99,13 @@ export function Player({ item, initialPosition = 0, onClose }) {
     return "direct";
   }
 
-  const mode = playbackMode();
-
   /* ------------------------------- lifecycle ------------------------------- */
 
   useEffect(() => {
     const v = videoRef.current;
     if (!v) return;
-    let url;
+    let cancelled = false;
+    const untrackFns = [];
 
     // Re-runs whenever the quality choice changes, too — pick up wherever
     // playback currently is rather than restarting from zero.
@@ -113,6 +116,11 @@ export function Player({ item, initialPosition = 0, onClose }) {
     v.volume = volume;
     v.muted = muted;
     v.playbackRate = speed;
+    setBuffering(true);
+    setAudioTracks([]);
+    setSubtitleTracks([]);
+    setAudioTrack(-1);
+    setSubtitleTrack(-1);
 
     const resumeAndPlay = () => {
       if (resumeAt > 1) {
@@ -124,89 +132,195 @@ export function Player({ item, initialPosition = 0, onClose }) {
       v.play().catch(() => {});
     };
 
-    if (mode === "hls") {
-      url = client.streamUrl(item, {
-        maxBitrate: opt?.maxBitrate,
-        maxHeight: opt?.maxHeight,
-      });
-      setStats((s) => ({ ...(s || {}), playMethod: "Transcode (HLS)" }));
-      const hls = new Hls({
-        enableWorker: true,
-        lowLatencyMode: false,
-        // Some servers reject the query-string api_key on HLS requests and
-        // require the full Authorization header instead — hls.js can't rely
-        // on <video src> query params, so we set it on every XHR it makes.
-        xhrSetup: (xhr) => xhr.setRequestHeader("Authorization", mediaAuthHeader(client.token)),
-      });
-      hlsRef.current = hls;
-      hls.loadSource(url);
-      hls.attachMedia(v);
-      hls.on(Hls.Events.MANIFEST_PARSED, resumeAndPlay);
-      hls.on(Hls.Events.LEVEL_SWITCHED, (_e, data) => {
-        const level = hls.levels?.[data.level];
-        setStats((s) => ({ ...(s || {}), level, playMethod: "Transcode (HLS)" }));
-      });
-      // Jellyfin's HLS master playlist carries every text subtitle and every
-      // audio stream as alternate renditions — hls.js can swap between them
-      // instantly, with no restart, exactly like the quality-independent
-      // track menus in a native player.
-      hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, () => {
-        setAudioTracks(hls.audioTracks || []);
-        setAudioTrack(hls.audioTrack);
-      });
-      hls.on(Hls.Events.AUDIO_TRACK_SWITCHED, (_e, data) => setAudioTrack(data.id));
-      hls.on(Hls.Events.SUBTITLE_TRACKS_UPDATED, () => {
-        setSubtitleTracks(hls.subtitleTracks || []);
-        setSubtitleTrack(hls.subtitleTrack);
-      });
-      hls.on(Hls.Events.SUBTITLE_TRACK_SWITCH, (_e, data) => setSubtitleTrack(data.id));
-      let networkRetries = 0;
-      hls.on(Hls.Events.ERROR, (_e, data) => {
-        if (data.fatal) {
-          if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
-            networkRetries += 1;
-            // A CORS-blocked response looks identical to a flaky network to
-            // hls.js, so it retries forever — cap it and say so plainly.
-            if (networkRetries > 6) {
+    // Direct play has no HLS master playlist to carry subtitle renditions,
+    // so text tracks are added by hand from the item's own subtitle
+    // streams — Jellyfin hands back a ready-to-fetch DeliveryUrl for every
+    // one it can convert to WebVTT.
+    const directSubtitleTracks = () => {
+      const streams = item?.MediaSources?.[0]?.MediaStreams || [];
+      return streams
+        .filter((s) => s.Type === "Subtitle" && s.DeliveryUrl)
+        .map((s, i) => ({
+          id: i,
+          name: s.DisplayTitle || s.Language || `Track ${i + 1}`,
+          lang: s.Language,
+          url: `${client.serverUrl}${s.DeliveryUrl}${
+            s.DeliveryUrl.includes("?") ? "&" : "?"
+          }api_key=${encodeURIComponent(client.token)}`,
+        }));
+    };
+
+    // Direct play and native (Safari) HLS both decode in the browser itself,
+    // so multi-audio selection goes through the native AudioTrackList API
+    // rather than anything Jellyfin-specific.
+    const wireNativeAudioTracks = () => {
+      const at = v.audioTracks;
+      if (!at) return undefined;
+      const sync = () => {
+        const list = Array.from(at).map((t, i) => ({
+          id: t.id || String(i),
+          name: t.label || t.language || `Track ${i + 1}`,
+          lang: t.language,
+        }));
+        setAudioTracks(list);
+        const active = Array.from(at).find((t) => t.enabled);
+        setAudioTrack(active ? active.id : -1);
+      };
+      at.addEventListener("addtrack", sync);
+      at.addEventListener("removetrack", sync);
+      at.addEventListener("change", sync);
+      sync();
+      return () => {
+        at.removeEventListener("addtrack", sync);
+        at.removeEventListener("removetrack", sync);
+        at.removeEventListener("change", sync);
+      };
+    };
+
+    // Safari's native HLS engine parses subtitle renditions from the master
+    // playlist itself and exposes them as ordinary TextTracks — no manual
+    // <track> injection needed there (unlike direct play, above).
+    const wireNativeSubtitleTracks = () => {
+      const tt = v.textTracks;
+      if (!tt) return undefined;
+      const sync = () => {
+        const list = Array.from(tt).map((t, i) => ({
+          id: i,
+          name: t.label || t.language || `Track ${i + 1}`,
+          lang: t.language,
+        }));
+        setSubtitleTracks(list);
+        setSubtitleTrack(Array.from(tt).findIndex((t) => t.mode === "showing"));
+      };
+      tt.addEventListener("addtrack", sync);
+      tt.addEventListener("removetrack", sync);
+      tt.addEventListener("change", sync);
+      sync();
+      return () => {
+        tt.removeEventListener("addtrack", sync);
+        tt.removeEventListener("removetrack", sync);
+        tt.removeEventListener("change", sync);
+      };
+    };
+
+    (async () => {
+      let mode = fallbackMode();
+      let playSessionId = null;
+
+      // Ask Jellyfin whether this browser can play the source as-is before
+      // paying for a transcode — most files don't need one, and this is
+      // what stops every video defaulting to a re-encoded H264/AAC stream.
+      if (mode === "hls" || mode === "native-hls") {
+        const info = await client.getPlaybackInfo(item, {
+          mediaSourceId,
+          maxBitrate: opt?.maxBitrate,
+          startPositionTicks: secondsToTicks(resumeAt),
+        });
+        if (cancelled) return;
+        playSessionId = info.playSessionId;
+        if (info.source?.SupportsDirectPlay) mode = "direct";
+      }
+      playSessionIdRef.current = playSessionId;
+
+      if (mode === "direct") {
+        setSubtitleTracks(directSubtitleTracks());
+        const c = wireNativeAudioTracks();
+        if (c) untrackFns.push(c);
+      } else if (mode === "native-hls") {
+        const c1 = wireNativeAudioTracks();
+        const c2 = wireNativeSubtitleTracks();
+        if (c1) untrackFns.push(c1);
+        if (c2) untrackFns.push(c2);
+      }
+
+      if (mode === "hls") {
+        const url = client.streamUrl(item, {
+          maxBitrate: opt?.maxBitrate,
+          maxHeight: opt?.maxHeight,
+          playSessionId,
+        });
+        setStats((s) => ({ ...(s || {}), playMethod: "Transcode (HLS)" }));
+        const hls = new Hls({
+          enableWorker: true,
+          lowLatencyMode: false,
+          // Some servers reject the query-string api_key on HLS requests and
+          // require the full Authorization header instead — hls.js can't rely
+          // on <video src> query params, so we set it on every XHR it makes.
+          xhrSetup: (xhr) => xhr.setRequestHeader("Authorization", mediaAuthHeader(client.token)),
+        });
+        hlsRef.current = hls;
+        hls.loadSource(url);
+        hls.attachMedia(v);
+        hls.on(Hls.Events.MANIFEST_PARSED, resumeAndPlay);
+        hls.on(Hls.Events.LEVEL_SWITCHED, (_e, data) => {
+          const level = hls.levels?.[data.level];
+          setStats((s) => ({ ...(s || {}), level, playMethod: "Transcode (HLS)" }));
+        });
+        // Jellyfin's HLS master playlist carries every text subtitle and every
+        // audio stream as alternate renditions — hls.js can swap between them
+        // instantly, with no restart, exactly like the quality-independent
+        // track menus in a native player.
+        hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, () => {
+          setAudioTracks(hls.audioTracks || []);
+          setAudioTrack(hls.audioTrack);
+        });
+        hls.on(Hls.Events.AUDIO_TRACK_SWITCHED, (_e, data) => setAudioTrack(data.id));
+        hls.on(Hls.Events.SUBTITLE_TRACKS_UPDATED, () => {
+          setSubtitleTracks(hls.subtitleTracks || []);
+          setSubtitleTrack(hls.subtitleTrack);
+        });
+        hls.on(Hls.Events.SUBTITLE_TRACK_SWITCH, (_e, data) => setSubtitleTrack(data.id));
+        let networkRetries = 0;
+        hls.on(Hls.Events.ERROR, (_e, data) => {
+          if (data.fatal) {
+            if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+              networkRetries += 1;
+              // A CORS-blocked response looks identical to a flaky network to
+              // hls.js, so it retries forever — cap it and say so plainly.
+              if (networkRetries > 6) {
+                hls.destroy();
+                setError(
+                  isLiveTv(item)
+                    ? "This channel's stream keeps failing to load — your Jellyfin server (or its reverse proxy) may be missing CORS headers on live TV responses. Check its network/CORS configuration."
+                    : "This stream keeps failing to load — check that the server is reachable and try again.",
+                );
+                return;
+              }
+              hls.startLoad();
+            } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();
+            else {
+              setError("This stream stopped part-way. It may still be processing — try again in a moment.");
               hls.destroy();
-              setError(
-                isLiveTv(item)
-                  ? "This channel's stream keeps failing to load — your Jellyfin server (or its reverse proxy) may be missing CORS headers on live TV responses. Check its network/CORS configuration."
-                  : "This stream keeps failing to load — check that the server is reachable and try again.",
-              );
-              return;
             }
-            hls.startLoad();
-          } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();
-          else {
-            setError("This stream stopped part-way. It may still be processing — try again in a moment.");
-            hls.destroy();
           }
-        }
-      });
-    } else if (mode === "native-hls") {
-      url = client.streamUrl(item, {
-        maxBitrate: opt?.maxBitrate,
-        maxHeight: opt?.maxHeight,
-      });
-      v.src = url;
-      v.load();
-      v.onloadedmetadata = resumeAndPlay;
-      setStats((s) => ({ ...(s || {}), playMethod: "HLS (native)" }));
-    } else {
-      // Direct / progressive / audio — the server hands back a playable file.
-      url = client.directUrl(item, { audio: isAudioOnly(item), mediaSourceId });
-      v.src = url;
-      v.load();
-      v.onloadedmetadata = resumeAndPlay;
-      setStats((s) => ({ ...(s || {}), playMethod: "Direct play" }));
-    }
+        });
+      } else if (mode === "native-hls") {
+        const url = client.streamUrl(item, {
+          maxBitrate: opt?.maxBitrate,
+          maxHeight: opt?.maxHeight,
+          playSessionId,
+        });
+        v.src = url;
+        v.load();
+        v.onloadedmetadata = resumeAndPlay;
+        setStats((s) => ({ ...(s || {}), playMethod: "HLS (native)" }));
+      } else {
+        // Direct / progressive / audio — the server hands back a playable file.
+        const url = client.directUrl(item, { audio: isAudioOnly(item), mediaSourceId });
+        v.src = url;
+        v.load();
+        v.onloadedmetadata = resumeAndPlay;
+        setStats((s) => ({ ...(s || {}), playMethod: "Direct play" }));
+      }
+    })();
 
     return () => {
+      cancelled = true;
       if (hlsRef.current) {
         hlsRef.current.destroy();
         hlsRef.current = null;
       }
+      untrackFns.forEach((fn) => fn());
       clearTimeout(reportTimer.current);
       v.onloadedmetadata = null;
       v.removeAttribute("src");
@@ -242,7 +356,23 @@ export function Player({ item, initialPosition = 0, onClose }) {
 
   useEffect(() => {
     const fsEl = () => document.fullscreenElement || document.webkitFullscreenElement;
-    const onFsChange = () => setIsFullscreen(Boolean(fsEl()));
+    const onFsChange = () => {
+      const isFs = Boolean(fsEl());
+      setIsFullscreen(isFs);
+      if (!isFs) {
+        // Browsers exit fullscreen on Escape themselves, and this event
+        // fires before that same keypress reaches our own keydown handler
+        // below — so by the time it checks document.fullscreenElement,
+        // fullscreen already looks off and it would otherwise close the
+        // whole player instead of just leaving fullscreen. This flag tells
+        // that handler "fullscreen just ended, don't also treat this as a
+        // close" for the remainder of the current event loop turn.
+        justExitedFsRef.current = true;
+        setTimeout(() => {
+          justExitedFsRef.current = false;
+        }, 0);
+      }
+    };
     // iOS Safari has no Fullscreen API for arbitrary elements — only the
     // <video> itself can go fullscreen, with its own begin/end events.
     const onVideoFsBegin = () => setIsFullscreen(true);
@@ -326,19 +456,31 @@ export function Player({ item, initialPosition = 0, onClose }) {
       if (!client || !item || isLiveTv(item)) return;
       const ticks = secondsToTicks(pos);
       const ms = item.MediaSources?.[0]?.Id;
-      client.reportProgress(item.Id, { positionTicks: ticks, mediaSourceId: ms });
+      client.reportProgress(item.Id, {
+        positionTicks: ticks,
+        mediaSourceId: ms,
+        playSessionId: playSessionIdRef.current,
+      });
     },
     [client, item],
   );
 
-  // Mark played / report on the way out.
+  // Close out the Jellyfin session on the way out — this is what releases
+  // an active transcode job server-side instead of leaving it to time out —
+  // then mark played / report the final position.
   useEffect(() => {
     return () => {
       const v = videoRef.current;
-      if (!v || !item || isLiveTv(item)) return;
+      if (!v || !item) return;
+      const ms = item.MediaSources?.[0]?.Id;
+      client.stopPlayback(item.Id, {
+        positionTicks: secondsToTicks(v.currentTime),
+        mediaSourceId: ms,
+        playSessionId: playSessionIdRef.current,
+      });
+      if (isLiveTv(item)) return;
       const d = v.duration;
       if (d > 0 && v.currentTime / d > 0.9) {
-        const ms = item.MediaSources?.[0]?.Id;
         client.markPlayed(item.Id, { mediaSourceId: ms });
       } else if (v.currentTime > 15) {
         report(v.currentTime);
@@ -425,12 +567,22 @@ export function Player({ item, initialPosition = 0, onClose }) {
   }, []);
 
   const selectAudioTrack = useCallback((id) => {
-    if (hlsRef.current) hlsRef.current.audioTrack = id;
+    if (hlsRef.current) {
+      hlsRef.current.audioTrack = id;
+    } else {
+      const at = videoRef.current?.audioTracks;
+      if (at) for (let i = 0; i < at.length; i++) at[i].enabled = at[i].id === id;
+    }
     setAudioTrack(id);
   }, []);
 
   const selectSubtitleTrack = useCallback((id) => {
-    if (hlsRef.current) hlsRef.current.subtitleTrack = id;
+    if (hlsRef.current) {
+      hlsRef.current.subtitleTrack = id;
+    } else {
+      const tt = videoRef.current?.textTracks;
+      if (tt) for (let i = 0; i < tt.length; i++) tt[i].mode = i === id ? "showing" : "hidden";
+    }
     setSubtitleTrack(id);
   }, []);
 
@@ -439,7 +591,7 @@ export function Player({ item, initialPosition = 0, onClose }) {
     const onKey = (e) => {
       if (e.key === "Escape") {
         if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
-        else onClose();
+        else if (!justExitedFsRef.current) onClose();
       } else if (e.key === " " || e.key === "k") {
         e.preventDefault();
         toggle();
@@ -534,6 +686,7 @@ export function Player({ item, initialPosition = 0, onClose }) {
         className="player-video"
         playsInline
         autoPlay
+        crossOrigin="anonymous"
         onPlay={() => setPlaying(true)}
         onPause={() => setPlaying(false)}
         onWaiting={() => setBuffering(true)}
@@ -548,7 +701,13 @@ export function Player({ item, initialPosition = 0, onClose }) {
           setBuffering(false);
           if (!error) setError("Couldn't start this file. It may not be playable in this browser.");
         }}
-      />
+      >
+        {subtitleTracks
+          .filter((t) => t.url)
+          .map((t) => (
+            <track key={t.id} kind="subtitles" src={t.url} srcLang={t.lang || undefined} label={t.name} />
+          ))}
+      </video>
 
       {buffering && !error && (
         <div className="player-loading">

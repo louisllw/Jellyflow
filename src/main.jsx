@@ -125,3 +125,11 @@ createRoot(document.getElementById("root")).render(
 
 // The ambient layer lives above everything, including the player.
 document.body.insertAdjacentHTML("beforeend", '<div class="grain" aria-hidden="true"></div>');
+
+if (import.meta.env.PROD && "serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js").catch((err) => {
+      console.error("Service worker registration failed:", err);
+    });
+  });
+}

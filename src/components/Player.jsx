@@ -5,6 +5,7 @@ import { mediaAuthHeader } from "../api/jellyfin.js";
 import { fmtClock, isAudioOnly, isLiveTv, secondsToTicks, ticksToSeconds } from "../api/utils.js";
 import { IconBack, IconSettings, IconInfo } from "./Icons.jsx";
 import { combineHlsMasters } from "./adaptiveManifest.js";
+import { lockDocumentScroll } from "./documentScrollLock.js";
 import {
   autoHlsConfig,
   autoStepUpDecision,
@@ -1482,14 +1483,12 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
     };
   }, [playing]);
 
-  // Lock body scroll while the player is up.
+  // Freeze the page behind the player. Root overflow alone is not enough on
+  // iOS Safari, where touch panning can still move the body under a fixed UI.
   useEffect(() => {
-    const prev = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
+    const unlock = lockDocumentScroll();
     containerRef.current?.focus({ preventScroll: true });
-    return () => {
-      document.body.style.overflow = prev;
-    };
+    return unlock;
   }, []);
 
   useEffect(() => {

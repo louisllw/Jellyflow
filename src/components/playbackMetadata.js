@@ -90,3 +90,19 @@ export function transcodeReasons(source) {
   }
   return [...new Set(values.filter(Boolean).map(humanizeReason))];
 }
+
+export function episodePlaybackHeading(item) {
+  if (item?.Type !== "Episode") return null;
+
+  const season = item.ParentIndexNumber === 0
+    ? "Special"
+    : item.ParentIndexNumber != null
+      ? `S${item.ParentIndexNumber}`
+      : item.SeasonName || "";
+  const episode = item.IndexNumber != null ? `E${item.IndexNumber}` : "Episode";
+
+  return {
+    title: item.SeriesName || "Unknown series",
+    subtitle: [[season, episode].filter(Boolean).join(" "), item.Name].filter(Boolean).join(" · "),
+  };
+}

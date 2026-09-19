@@ -1,6 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { findIntroSegment, findSkippableSegment, transcodeReasons } from "../src/components/playbackMetadata.js";
+import {
+  episodePlaybackHeading,
+  findIntroSegment,
+  findSkippableSegment,
+  transcodeReasons,
+} from "../src/components/playbackMetadata.js";
 
 const ticks = (seconds) => seconds * 10_000_000;
 
@@ -41,4 +46,28 @@ test("extracts and humanizes Jellyfin transcode reasons", () => {
     transcodeReasons({ TranscodingUrl: "/Videos/id/master.m3u8?TranscodeReasons=VideoCodecNotSupported,ContainerBitrateExceedsLimit" }),
     ["Video codec not supported", "Bitrate exceeds selected limit"],
   );
+});
+
+test("identifies an episode by series, season, number and title", () => {
+  assert.deepEqual(episodePlaybackHeading({
+    Type: "Episode",
+    SeriesName: "Detectorists",
+    ParentIndexNumber: 2,
+    IndexNumber: 4,
+    Name: "Episode Four",
+  }), {
+    title: "Detectorists",
+    subtitle: "S2 E4 · Episode Four",
+  });
+  assert.deepEqual(episodePlaybackHeading({
+    Type: "Episode",
+    SeriesName: "Detectorists",
+    ParentIndexNumber: 0,
+    IndexNumber: 1,
+    Name: "Christmas Special",
+  }), {
+    title: "Detectorists",
+    subtitle: "Special E1 · Christmas Special",
+  });
+  assert.equal(episodePlaybackHeading({ Type: "Movie", Name: "A Film" }), null);
 });

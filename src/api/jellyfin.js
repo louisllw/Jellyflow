@@ -399,7 +399,7 @@ export class Jellyfin {
       SeriesId: seriesId,
       Limit: 1,
       EnableUserData: true,
-      Fields: "PrimaryImageAspectRatio,Overview,MediaSources",
+      Fields: "PrimaryImageAspectRatio,IndexNumber,ParentIndexNumber,SeriesName,SeasonName,Overview,MediaSources",
       ...params,
     });
   }
@@ -416,7 +416,7 @@ export class Jellyfin {
       IncludeItemTypes: "Episode",
       Recursive: false,
       Fields:
-        "PrimaryImageAspectRatio,IndexNumber,OriginalRuntimeTicks,ProductionYear,Overview,CommunityRating",
+        "PrimaryImageAspectRatio,IndexNumber,ParentIndexNumber,SeriesName,SeasonName,OriginalRuntimeTicks,ProductionYear,Overview,CommunityRating",
       EnableUserData: true,
       ...params,
     });

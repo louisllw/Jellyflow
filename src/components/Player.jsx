@@ -11,7 +11,7 @@ import {
   connectionBandwidthEstimate,
   levelForBandwidth,
 } from "./adaptivePlayback.js";
-import { findSkippableSegment, transcodeReasons } from "./playbackMetadata.js";
+import { episodePlaybackHeading, findSkippableSegment, transcodeReasons } from "./playbackMetadata.js";
 import {
   AUTO_CEILING_KEY,
   AUTO_QUALITY_OPTIONS,
@@ -105,6 +105,7 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
   const pendingScrubFracRef = useRef(null);
   const completedRef = useRef(false);
   const prefs = useMemo(() => loadPrefs(), []);
+  const episodeHeading = episodePlaybackHeading(item);
 
   const [playing, setPlaying] = useState(false);
   const [current, setCurrent] = useState(0);
@@ -1572,7 +1573,7 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
       className={`player ${uiVisible ? "" : "player-idle"} ${showStats || showQuality ? "player-popover-pinned" : ""}`}
       role="dialog"
       aria-modal="true"
-      aria-label={`Playing ${item?.Name || "media"}`}
+      aria-label={`Playing ${episodeHeading ? `${episodeHeading.title}, ${episodeHeading.subtitle}` : item?.Name || "media"}`}
       tabIndex={-1}
       onMouseMove={wake}
       onClick={wake}
@@ -2080,10 +2081,14 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
           </div>
 
           <div className="player-title">
-            <b>{item?.Name || "Untitled"}</b>
+            <b>{episodeHeading?.title || item?.Name || "Untitled"}</b>
             <span>
-              {item?.ProductionYear ? item.ProductionYear + " · " : ""}
-              {isAudioOnly(item) ? "Audio" : "Video"}
+              {episodeHeading?.subtitle || (
+                <>
+                  {item?.ProductionYear ? item.ProductionYear + " · " : ""}
+                  {isAudioOnly(item) ? "Audio" : "Video"}
+                </>
+              )}
             </span>
           </div>
         </div>

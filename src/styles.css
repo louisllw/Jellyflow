@@ -2582,9 +2582,13 @@ img {
 }
 
 .player-title span {
+  display: block;
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--ink-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .player-loading {

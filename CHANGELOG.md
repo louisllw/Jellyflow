@@ -1,6 +1,12 @@
 # Changelog
 
-## 0.1.0-beta.3 (unreleased)
+## 0.1.0-beta.4 (unreleased)
+
+Build fix:
+
+- Build the architecture-independent frontend on the native CI runner so the ARM64 image no longer runs Node under QEMU.
+
+## 0.1.0-beta.3 — 2026-09-19
 
 Bug fixes and refinements:
 

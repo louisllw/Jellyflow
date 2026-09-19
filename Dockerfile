@@ -11,7 +11,9 @@
 #
 # …then open http://localhost:8080 and point it at your Jellyfin server.
 
-FROM node:20-alpine AS build
+# The frontend bundle is architecture-independent. Build it on the native
+# GitHub runner instead of emulating Node under QEMU for the ARM64 image.
+FROM --platform=$BUILDPLATFORM node:20-alpine AS build
 WORKDIR /app
 
 COPY package.json package-lock.json ./

@@ -1,0 +1,20 @@
+# Dependencies and generated output
+node_modules/
+dist/
+
+# Local configuration and logs
+.env
+.env.*
+!.env.example
+*.log
+npm-debug.log*
+
+# Editors and operating systems
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Test and coverage output
+coverage/
+.vite/

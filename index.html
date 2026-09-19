@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#070811" />
+    <meta name="referrer" content="no-referrer" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: http: https:; media-src 'self' blob: http: https:; connect-src 'self' blob: http: https: ws: wss:; object-src 'none'; base-uri 'none'; form-action 'self'"
+    />
+    <title>Jellyflow — your Jellyfin, reframed</title>
+    <meta
+      name="description"
+      content="Jellyflow is a redesigned, flowing frontend for your own Jellyfin server. Point it at your instance and watch."
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,500;12..96,600;12..96,700;12..96,800&family=IBM+Plex+Mono:wght@400;500&family=Instrument+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap"
+      rel="stylesheet"
+    />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='4' y1='4' x2='28' y2='28'%3E%3Cstop stop-color='%23aa5cc3'/%3E%3Cstop offset='1' stop-color='%2300a4dc'/%3E%3C/linearGradient%3E%3C/defs%3E%3Ccircle cx='16' cy='16' r='13' fill='url(%23g)'/%3E%3Ccircle cx='16' cy='16' r='7' fill='%23070811'/%3E%3Ccircle cx='23' cy='9' r='2.5' fill='%2335c9f4'/%3E%3C/svg%3E"
+    />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script src="/env-config.js"></script>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>

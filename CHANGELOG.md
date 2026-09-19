@@ -9,6 +9,8 @@ Features and fixes:
 - Search now returns only top-level TV shows, movies and live TV channels, with dedicated filters for each; individual seasons and incomplete search-hint records no longer appear as results.
 - Fixed clearing the shared search field leaving the previous URL query active, stale search responses replacing newer ones, player autoplay running state changes during React render, and failed season requests loading forever.
 - User-data library requests are now explicitly scoped to the signed-in Jellyfin user.
+- Episode details now follow Jellyfin's media flow more closely: the show/season hierarchy and playback neighbours sit beside the primary action, useful air-date/rating/video/audio facts are visible, and an in-place season selector drives a horizontally scrollable episode rail positioned around the current episode.
+- Mobile playback now pins the video to the full player bounds with aspect-fit sizing in inline and fullscreen modes, preventing non-native aspect ratios from being enlarged and cropped.
 
 ## 0.1.0-beta.9 — 2026-09-19
 

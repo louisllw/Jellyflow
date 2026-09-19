@@ -24,6 +24,7 @@ export function Detail() {
   const [episodeQueue, setEpisodeQueue] = useState([]);
   const [seriesParent, setSeriesParent] = useState(null);
   const [seasonErrors, setSeasonErrors] = useState({});
+  const [activeSeasonId, setActiveSeasonId] = useState("");
   const [tick, setTick] = useState(0);
   const autoplayed = useRef(false);
   const retry = () => setTick((t) => t + 1);
@@ -36,6 +37,7 @@ export function Detail() {
     setEpisodeQueue([]);
     setSeriesParent(null);
     setSeasonErrors({});
+    setActiveSeasonId("");
     setError(null);
     setPlaying(null);
     autoplayed.current = false;
@@ -60,6 +62,14 @@ export function Detail() {
           setSeasons(seasonItems);
           setEpisodeQueue(ordered);
           setSeriesParent(parent);
+          const itemSeasonId = it.SeasonId || it.ParentId;
+          const requestedSeasonId = params.get("season");
+          const initialSeason =
+            seasonItems.find((season) => season.Id === itemSeasonId) ||
+            seasonItems.find((season) => season.Id === requestedSeasonId) ||
+            seasonItems.find((season) => (season.IndexNumber ?? 0) > 0) ||
+            seasonItems[0];
+          setActiveSeasonId(initialSeason?.Id || "");
           setEpisodes(
             ordered.reduce((grouped, episode) => {
               const seasonId = episode.SeasonId || episode.ParentId;
@@ -134,16 +144,26 @@ export function Detail() {
   const resumePosition = isLiveTv(item) ? 0 : ticksToSeconds(item.UserData?.PlaybackPositionTicks);
   // The /Items response carries backdrop *tags*, not image objects — prefer
   // the tag list and fall back to the object shape for odd servers.
-  const backdrops = item.BackdropImageTags || item.BackdropImages || [];
+  const backdropItem = isEpisode && seriesParent ? seriesParent : item;
+  const backdrops = backdropItem.BackdropImageTags || backdropItem.BackdropImages || [];
   const bg = backdrops[0]
-    ? client.image({ Id: id }, "Backdrop", { w: 1600, q: 85 })
-    : client.image(item, "Primary", { w: 1200 });
+    ? client.image(backdropItem, "Backdrop", { w: 1600, q: 85 })
+    : client.image(backdropItem, "Primary", { w: 1200 });
+
+  const episodeNumber = item.IndexNumber != null ? `Episode ${item.IndexNumber}` : "Episode";
+  const seasonNumber = item.ParentIndexNumber != null
+    ? item.ParentIndexNumber === 0 ? "Specials" : `Season ${item.ParentIndexNumber}`
+    : item.SeasonName;
+  const premiereDate = item.PremiereDate
+    ? new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short", year: "numeric" }).format(new Date(item.PremiereDate))
+    : "";
 
   const sub = [
     item.ProductionYear,
-    item.SeriesName,
-    item.SeasonName,
+    isEpisode ? seasonNumber : item.SeriesName,
+    isEpisode ? episodeNumber : item.SeasonName,
     fmtRuntimeTicks(item.RunTimeTicks),
+    item.OfficialRating,
     item.CommunityRating ? `★ ${item.CommunityRating}` : "",
   ]
     .filter(Boolean)
@@ -155,8 +175,12 @@ export function Detail() {
   const previousEpisode = currentEpisodeIndex > 0 ? episodeQueue[currentEpisodeIndex - 1] : null;
   const detailNextEpisode = currentEpisodeIndex >= 0 ? episodeQueue[currentEpisodeIndex + 1] || null : null;
   const currentSeason = seasons?.find((season) => season.Id === (item.SeasonId || item.ParentId));
-  const selectedSeasonId = params.get("season");
-  const defaultSeasonId = selectedSeasonId || seasons?.find((season) => (season.IndexNumber ?? 0) > 0)?.Id || seasons?.[0]?.Id;
+  const defaultSeasonId = activeSeasonId || seasons?.find((season) => (season.IndexNumber ?? 0) > 0)?.Id || seasons?.[0]?.Id;
+  const activeSeason = seasons?.find((season) => season.Id === activeSeasonId) || currentSeason;
+  const activeSeasonEpisodes = activeSeason ? episodes[activeSeason.Id] : undefined;
+  const mediaStreams = item.MediaSources?.[0]?.MediaStreams || [];
+  const videoStream = mediaStreams.find((stream) => stream.Type === "Video");
+  const audioStream = mediaStreams.find((stream) => stream.Type === "Audio");
 
   const playNext = async () => {
     if (!nextEpisode) return;
@@ -176,8 +200,16 @@ export function Detail() {
         <div className="scrim" />
         <div className="detail-head">
           <div className="hero-kicker">
-            {typeLabel(item.Type)}
-            {item.Status && ` · ${item.Status}`}
+            {isEpisode ? (
+              <>
+                <Link className="detail-series-link" to={`/item/${seriesParent?.Id || item.SeriesId}`}>
+                  {seriesParent?.Name || item.SeriesName || "Series"}
+                </Link>
+                <span> / {seasonNumber} / {episodeNumber}</span>
+              </>
+            ) : (
+              <>{typeLabel(item.Type)}{item.Status && ` · ${item.Status}`}</>
+            )}
           </div>
           <h1 className="detail-title">{item.Name}</h1>
           {sub && <div className="detail-sub">{sub}</div>}
@@ -193,6 +225,16 @@ export function Detail() {
                     : "Play"
                   : "Play next episode"}
               </button>
+              {isEpisode && previousEpisode && (
+                <Link className="btn detail-episode-action" to={`/item/${previousEpisode.Id}`}>
+                  Previous episode
+                </Link>
+              )}
+              {isEpisode && detailNextEpisode && (
+                <Link className="btn detail-episode-action" to={`/item/${detailNextEpisode.Id}`}>
+                  Next episode
+                </Link>
+              )}
             </div>
           )}
         </div>
@@ -201,7 +243,7 @@ export function Detail() {
       {isEpisode && seriesParent && (
         <nav className="series-path reveal" aria-label="Series navigation">
           <div className="series-path-copy">
-            <span>{item.SeasonName || `Season ${item.ParentIndexNumber || ""}`}</span>
+            <span>{seasonNumber} · {episodeNumber}</span>
             <Link to={`/item/${seriesParent.Id}`}>{seriesParent.Name}</Link>
           </div>
           <div className="series-path-actions">
@@ -211,9 +253,9 @@ export function Detail() {
                 <b>E{previousEpisode.IndexNumber ?? "–"} · {previousEpisode.Name}</b>
               </Link>
             ) : <span />}
-            <Link className="series-path-all" to={`/item/${seriesParent.Id}${currentSeason ? `?season=${currentSeason.Id}` : ""}`}>
-              All seasons
-            </Link>
+            <a className="series-path-all" href="#episodes">
+              Browse episodes
+            </a>
             {detailNextEpisode ? (
               <Link className="series-path-step series-path-next" to={`/item/${detailNextEpisode.Id}`}>
                 <small>Up next</small>
@@ -252,10 +294,34 @@ export function Detail() {
                 <dd>{fmtRuntimeTicks(item.RunTimeTicks)}</dd>
               </div>
             )}
+            {isEpisode && premiereDate && (
+              <div className="spec-row">
+                <dt>Aired</dt>
+                <dd>{premiereDate}</dd>
+              </div>
+            )}
+            {item.OfficialRating && (
+              <div className="spec-row">
+                <dt>Certificate</dt>
+                <dd>{item.OfficialRating}</dd>
+              </div>
+            )}
             {item.CommunityRating > 0 && (
               <div className="spec-row">
                 <dt>Rated</dt>
                 <dd>{item.CommunityRating} / 10</dd>
+              </div>
+            )}
+            {videoStream && (
+              <div className="spec-row">
+                <dt>Video</dt>
+                <dd>{videoStream.DisplayTitle || [videoStream.Codec?.toUpperCase(), videoStream.Height ? `${videoStream.Height}p` : ""].filter(Boolean).join(" · ")}</dd>
+              </div>
+            )}
+            {audioStream && (
+              <div className="spec-row">
+                <dt>Audio</dt>
+                <dd>{audioStream.DisplayTitle || [audioStream.Codec?.toUpperCase(), audioStream.Channels ? `${audioStream.Channels} ch` : ""].filter(Boolean).join(" · ")}</dd>
               </div>
             )}
             {item.People?.slice(0, 6).map((p) => (
@@ -292,24 +358,37 @@ export function Detail() {
         </section>
       )}
 
-      {isEpisode && currentSeason && (
-        <section className="seasons episode-season" aria-label={`Episodes in ${currentSeason.Name}`}>
+      {isEpisode && activeSeason && (
+        <section id="episodes" className="seasons episode-season" aria-label="Browse episodes">
           <div className="seasons-heading">
             <div>
-              <div className="page-eyebrow">Keep watching</div>
-              <h2>{currentSeason.Name || item.SeasonName || "This season"}</h2>
+              <div className="page-eyebrow">More from {seriesParent?.Name || item.SeriesName}</div>
+              <h2>Episodes</h2>
             </div>
-            <Link className="season-series-link" to={`/item/${seriesParent?.Id || item.SeriesId}`}>
-              View every season
-            </Link>
+            <div className="episode-season-controls">
+              <label htmlFor="episode-season-select">Season</label>
+              <div className="select-wrap">
+                <select
+                  id="episode-season-select"
+                  value={activeSeason.Id}
+                  onChange={(event) => setActiveSeasonId(event.target.value)}
+                >
+                  {seasons.map((season) => (
+                    <option key={season.Id} value={season.Id}>{season.Name || season.SeasonName}</option>
+                  ))}
+                </select>
+              </div>
+              <Link className="season-series-link" to={`/item/${seriesParent?.Id || item.SeriesId}`}>
+                Show page
+              </Link>
+            </div>
           </div>
-          <SeasonBlock
-            season={currentSeason}
+          <EpisodeBrowser
+            season={activeSeason}
             client={client}
-            episodes={episodes}
+            episodes={activeSeasonEpisodes}
             load={loadSeason}
-            loadError={seasonErrors[currentSeason.Id]}
-            defaultOpen
+            loadError={seasonErrors[activeSeason.Id]}
             currentEpisodeId={item.Id}
           />
         </section>
@@ -344,6 +423,52 @@ export function Detail() {
         />
       )}
     </>
+  );
+}
+
+function EpisodeBrowser({ season, client, episodes, load, loadError, currentEpisodeId }) {
+  const browserRef = useRef(null);
+
+  useEffect(() => {
+    load(season.Id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [season.Id]);
+
+  useEffect(() => {
+    const rail = browserRef.current;
+    const current = rail?.querySelector(`[data-episode-id="${currentEpisodeId}"]`);
+    if (!rail || !current) return;
+    const target = current.previousElementSibling || current;
+    const offset = target.getBoundingClientRect().left - rail.getBoundingClientRect().left;
+    rail.scrollLeft = Math.max(0, rail.scrollLeft + offset - 12);
+  }, [currentEpisodeId, episodes, season.Id]);
+
+  if (loadError) {
+    return (
+      <div className="season-empty season-error">
+        <span>{loadError.message || "This season could not be loaded."}</span>
+        <button className="btn" onClick={() => load(season.Id)}>Try again</button>
+      </div>
+    );
+  }
+
+  if (episodes === undefined) {
+    return (
+      <div className="season-loading" role="status">
+        <div className="spinner" />
+        <span>Loading this season</span>
+      </div>
+    );
+  }
+
+  if (episodes.length === 0) return <div className="season-empty">No episodes are available in this season.</div>;
+
+  return (
+    <div ref={browserRef} className="episode-list episode-browser-list">
+      {episodes.map((episode) => (
+        <EpisodeCard key={episode.Id} episode={episode} client={client} current={episode.Id === currentEpisodeId} />
+      ))}
+    </div>
   );
 }
 
@@ -425,7 +550,7 @@ function EpisodeCard({ episode, client, current = false }) {
     : "";
 
   return (
-    <article className={`episode-card ${current ? "episode-card-current" : ""}`}>
+    <article data-episode-id={episode.Id} className={`episode-card ${current ? "episode-card-current" : ""}`}>
       <Link className="episode-art" to={`/item/${episode.Id}?play=1`} aria-label={`Play ${episode.Name}`}>
         {art ? (
           <img src={art} alt="" loading="lazy" />

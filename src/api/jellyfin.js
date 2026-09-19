@@ -346,7 +346,7 @@ export class Jellyfin {
       UserId: this.userId,
       EnableUserData: true,
       Fields:
-        "PrimaryImageAspectRatio,IndexNumber,ParentIndexNumber,SeasonId,SeriesId,SeriesName,SeasonName,OriginalRuntimeTicks,ProductionYear,Overview,CommunityRating",
+        "PrimaryImageAspectRatio,IndexNumber,ParentIndexNumber,ParentId,SeasonId,SeriesId,SeriesName,SeasonName,OriginalRuntimeTicks,ProductionYear,PremiereDate,Overview,CommunityRating,OfficialRating",
       ...params,
     });
   }

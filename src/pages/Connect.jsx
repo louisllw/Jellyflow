@@ -7,7 +7,7 @@ import { hostOf, userAvatarUrl } from "../api/jellyfin.js";
  * otherwise the person signing in chooses their server here.
  */
 export function Connect({ prefill, existingError }) {
-  const { connect, connectWithApiKey, listApiKeyUsers, configuredServer } = useSession();
+  const { connect, connectWithApiKey, listApiKeyUsers, configuredServer, configuredServerName } = useSession();
   const [mode, setMode] = useState("password"); // "password" | "apikey"
   const [server, setServer] = useState(configuredServer || prefill || "");
   const [username, setUsername] = useState("");
@@ -145,7 +145,7 @@ export function Connect({ prefill, existingError }) {
         {configuredServer ? (
           <div className="connect-fixed-server">
             <span>Server</span>
-            <strong>{hostOf(configuredServer)}</strong>
+            <strong>{configuredServerName || hostOf(configuredServer)}</strong>
             <small>Configured by this Jellyflow instance</small>
           </div>
         ) : (
@@ -218,9 +218,8 @@ export function Connect({ prefill, existingError }) {
         </button>
 
         <div className="connect-foot">
-          <span style={{ color: "var(--ink-dim)" }}>Jellyflow is a frontend only.</span> It runs in
-          your browser, signs in with your own credentials, and streams straight from your server —
-          nothing is relayed or stored here.
+          <span style={{ color: "var(--ink-dim)" }}>Jellyflow keeps no accounts or database.</span> Your
+          sign-in is used only with the selected Jellyfin server, and session data stays in this browser.
         </div>
       </form>
     </div>

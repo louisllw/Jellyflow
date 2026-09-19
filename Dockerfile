@@ -26,11 +26,14 @@ FROM nginx:1.27-alpine
 LABEL org.opencontainers.image.source="https://github.com/louisllw/Jellyflow" \
       org.opencontainers.image.description="A flowing, independent web client for Jellyfin" \
       org.opencontainers.image.licenses="MIT"
+RUN apk upgrade --no-cache ca-certificates
 COPY nginx-main.conf /etc/nginx/nginx.conf
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/dist /usr/share/nginx/html
 COPY docker-entrypoint.sh /docker-entrypoint.sh
 RUN chmod +x /docker-entrypoint.sh \
+    && touch /etc/nginx/jellyfin-proxy.conf \
+    && chown nginx:nginx /etc/nginx/jellyfin-proxy.conf \
     && chown -R nginx:nginx /usr/share/nginx/html
 USER nginx
 EXPOSE 8080

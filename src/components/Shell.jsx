@@ -115,7 +115,7 @@ export function Shell({ children }) {
 
         <footer className="foot">
           <span>
-            <b>{user?.Name}</b> @ {hostOf(cfg?.serverUrl)}
+            <b>{user?.Name}</b> @ {cfg?.serverName || hostOf(cfg?.serverUrl)}
           </span>
           <span style={{ marginLeft: "auto" }}>Jellyflow · your Jellyfin, reframed</span>
         </footer>

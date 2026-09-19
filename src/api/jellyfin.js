@@ -1,4 +1,5 @@
-// Jellyfin API client — talks to any Jellyfin server straight from the browser.
+// Jellyfin API client. User-entered public servers are contacted directly;
+// container-configured servers are reached through Jellyflow's same-origin proxy.
 //
 // JSON calls use the X-Emby-Token header. Images and stream URLs use the
 // `api_key` query parameter instead, because <img> tags and the hls.js XHR
@@ -73,6 +74,11 @@ export function normalizeServerUrl(input) {
 export function runtimeServerUrl() {
   if (typeof window === "undefined") return "";
   return normalizeServerUrl(window.JELLYFIN_SERVER_URL || "");
+}
+
+export function runtimeServerName() {
+  if (typeof window === "undefined") return "";
+  return String(window.JELLYFIN_SERVER_NAME || "").trim();
 }
 
 export function hostOf(url) {

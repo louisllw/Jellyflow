@@ -20,17 +20,17 @@ A redesigned, flowing web client for [Jellyfin](https://jellyfin.org): dark, res
 
 ## Run it
 
-Jellyflow has no backend or database. It connects directly from your browser to a Jellyfin server you control.
+Jellyflow has no database. When a server is configured on the container, its nginx process proxies Jellyfin traffic so private Docker-network addresses work. Without one, the browser can connect directly to a public Jellyfin URL entered at sign-in.
 
 ```sh
 docker run -d \
   --name jellyflow \
   -p 8080:8080 \
-  -e JELLYFIN_URL=https://jellyfin.example.com \
+  -e JELLYFIN_URL=http://jellyfin:8096 \
   ghcr.io/louisllw/jellyflow:latest
 ```
 
-Open <http://localhost:8080>. When set, `JELLYFIN_URL` pins that deployment to the specified server, so users only enter their credentials. Omit it to let users choose a server on the connect screen; no Jellyfin hostname is hard-coded into the image.
+Open <http://localhost:8080>. When set, `JELLYFIN_URL` pins the deployment to that server and proxies requests through Jellyflow, so a shared Docker-network hostname such as `http://jellyfin:8096` works. A public HTTPS URL may also be pinned. Omit the variable to let users enter a public server URL on the connect screen and connect directly from their browser.
 
 Or use the included Compose file:
 
@@ -56,17 +56,17 @@ Both `linux/amd64` and `linux/arm64` images are published, covering common serve
 - Automatic next episode and a playback queue are not implemented.
 - General favourites and manual watched/unwatched controls are incomplete.
 - Music views, casting, SyncPlay and downloads are incomplete.
-- Jellyflow must be allowed by your Jellyfin CORS configuration. An HTTPS Jellyflow page also requires an HTTPS Jellyfin endpoint.
+- User-entered servers connect directly from the browser and must allow Jellyflow through CORS. An HTTPS Jellyflow page also requires an HTTPS user-entered Jellyfin endpoint. Setting `JELLYFIN_URL` uses the same-origin proxy and avoids both restrictions.
 
 See the [roadmap](ROADMAP.md) and [open issues](https://github.com/louisllw/Jellyflow/issues) for planned work.
 
 ## How authentication works
 
-1. Jellyflow sends the sign-in request directly to your Jellyfin server.
+1. With `JELLYFIN_URL`, Jellyflow's nginx proxy forwards sign-in and media requests to the configured server. Without it, the browser sends them directly.
 2. The password is discarded after sign-in.
 3. Jellyfin's session token is stored in that browser's `localStorage` and is removed when you sign out.
 
-The container serves static files only. Treat any device with an active session as signed in, use HTTPS outside a trusted local network, and never paste tokens into bug reports.
+The container does not store credentials or session data. Treat any device with an active session as signed in, use HTTPS outside a trusted local network, and never paste tokens into bug reports.
 
 ## Development
 

@@ -1,6 +1,12 @@
 # Changelog
 
-## 0.1.0-beta.2 (unreleased)
+## 0.1.0-beta.3 (unreleased)
+
+Bug fixes and refinements:
+
+- A configured `JELLYFIN_URL` is now reached through Jellyflow's same-origin nginx proxy, allowing Docker service names and private container-network addresses while retaining direct public-server sign-in when the variable is omitted.
+
+## 0.1.0-beta.2 — 2026-09-19
 
 Bug fixes and refinements:
 

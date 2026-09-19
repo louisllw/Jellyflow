@@ -7,6 +7,7 @@ import {
   loadConfig,
   login,
   normalizeServerUrl,
+  runtimeServerName,
   runtimeServerUrl,
   saveConfig,
   saveLastServer,
@@ -16,6 +17,7 @@ const Ctx = createContext(null);
 
 export function SessionProvider({ children }) {
   const [configuredServer] = useState(() => runtimeServerUrl());
+  const [configuredServerName] = useState(() => runtimeServerName());
   const [cfg, setCfg] = useState(() => {
     const saved = loadConfig();
     if (configuredServer && normalizeServerUrl(saved?.serverUrl) !== configuredServer) return null;
@@ -33,6 +35,7 @@ export function SessionProvider({ children }) {
     const { user: u, token } = await login(base, username.trim(), password);
     const newCfg = {
       serverUrl: base,
+      serverName: configuredServerName || undefined,
       username: u.Username,
       userId: u.Id,
       token,
@@ -45,7 +48,7 @@ export function SessionProvider({ children }) {
     setUser(u);
     setAuthError(null);
     return u;
-  }, [configuredServer]);
+  }, [configuredServer, configuredServerName]);
 
   // Step 1 of API-key sign-in: validate the key and hand back the server's
   // user list so the UI can ask which profile to act as.
@@ -59,6 +62,7 @@ export function SessionProvider({ children }) {
     const base = configuredServer || normalizeServerUrl(serverUrl);
     const newCfg = {
       serverUrl: base,
+      serverName: configuredServerName || undefined,
       username: user.Name,
       userId: user.Id,
       token: apiKey.trim(),
@@ -72,7 +76,7 @@ export function SessionProvider({ children }) {
     setUser(user);
     setAuthError(null);
     return user;
-  }, [configuredServer]);
+  }, [configuredServer, configuredServerName]);
 
   const disconnect = useCallback(() => {
     clearConfig();
@@ -128,12 +132,13 @@ export function SessionProvider({ children }) {
       booting,
       authError,
       configuredServer,
+      configuredServerName,
       connect,
       connectWithApiKey,
       listApiKeyUsers,
       disconnect,
     }),
-    [cfg, user, ready, booting, authError, configuredServer, connect, connectWithApiKey, listApiKeyUsers, disconnect],
+    [cfg, user, ready, booting, authError, configuredServer, configuredServerName, connect, connectWithApiKey, listApiKeyUsers, disconnect],
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

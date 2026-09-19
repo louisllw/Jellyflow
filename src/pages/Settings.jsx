@@ -49,7 +49,7 @@ export function Settings() {
           </div>
           <div className="spec-row">
             <dt>Server</dt>
-            <dd>{hostOf(cfg?.serverUrl)}</dd>
+            <dd>{cfg?.serverName || hostOf(cfg?.serverUrl)}</dd>
           </div>
         </dl>
 
@@ -104,8 +104,8 @@ export function Settings() {
         </div>
 
         <p className="settings-privacy">
-          Your credentials are stored only in this browser (localStorage) and are never sent anywhere except the
-          configured Jellyfin server. Sign out to erase them.
+          Your session is stored only in this browser (localStorage). Sign-in details are used only with the
+          configured Jellyfin server, through this deployment's local proxy when enabled. Sign out to erase the session.
         </p>
       </div>
     </>

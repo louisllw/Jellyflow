@@ -4,9 +4,10 @@
 #
 # then open http://localhost:8080 and sign in to your Jellyfin server.
 #
-# To pin this deployment to one server, set JELLYFIN_URL:
+# To pin and proxy this deployment to one server, set JELLYFIN_URL. This can
+# be a public URL or a service on a Docker network shared by both containers:
 #
-#   JELLYFIN_URL=https://jellyfin.example.org docker compose up -d
+#   JELLYFIN_URL=http://jellyfin:8096 docker compose up -d
 
 services:
   jellyflow:

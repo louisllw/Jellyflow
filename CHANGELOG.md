@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.0-beta.9 — 2026-09-19
+
+Bug fixes:
+
+- Resume playback now waits until the browser has a seekable media timeline, verifies that the saved position was applied, and retries when a browser silently resets an early seek. Pending progress reports also retain the last real Jellyfin position instead of briefly reporting zero while resume is still being established.
+- Closing the player now preserves its final playback position even after the media source has been torn down, so the cleanup request cannot lose the current watch time.
+- Leaving fullscreen keeps the same video and timeline playing across standard browser and iOS native-fullscreen transitions, while still respecting an explicit user pause and avoiding duplicate-event pause/resume flicker.
+- Continue Watching progress rings now read Jellyfin's `PlaybackPositionTicks` field.
+
 ## 0.1.0-beta.8 — 2026-09-19
 
 Bug fixes:

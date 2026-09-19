@@ -138,7 +138,7 @@ export function ProgressRing({ pct }) {
 
 export function itemProgress(item) {
   const ud = item?.UserData;
-  const ticks = ud?.PlayedTicks || 0;
+  const ticks = ud?.PlaybackPositionTicks || 0;
   const total = item?.RunTimeTicks || 0;
   if (!total || ticks <= 0) return 0;
   if (ud?.Played) return 1;

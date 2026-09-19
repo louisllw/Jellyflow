@@ -55,6 +55,9 @@ export function Player({ item, initialPosition = 0, onClose }) {
   const idleTimer = useRef(null);
   const playSessionIdRef = useRef(null);
   const justExitedFsRef = useRef(false);
+  const lastPositionRef = useRef(initialPosition);
+  const resumeTargetRef = useRef(initialPosition);
+  const fullscreenPlaybackRef = useRef({ shouldResume: false, position: 0 });
   // Intent, not state: only set by the user explicitly pausing/playing (the
   // toggle button, spacebar), never by onPause/onPlay — the video's own
   // paused state can't tell an OS-driven pause (see onVideoFsEnd) from the
@@ -93,6 +96,11 @@ export function Player({ item, initialPosition = 0, onClose }) {
     return it && !isAudioOnly(it);
   }
 
+  function reportablePosition(v) {
+    const target = resumeTargetRef.current;
+    return target > 1 && v.currentTime < target - 2 ? lastPositionRef.current : v.currentTime;
+  }
+
   // hls.js (MSE) is the reliable path in every browser that supports it —
   // native HTML5 HLS is only for browsers without MSE (Safari/iOS). Both are
   // only the *fallback*: the loading effect below asks Jellyfin first
@@ -121,6 +129,8 @@ export function Player({ item, initialPosition = 0, onClose }) {
     const resumeAt = v.currentTime > 1 ? v.currentTime : initialPosition;
     const opt = QUALITY_OPTIONS.find((q) => q.key === quality);
     const mediaSourceId = item?.MediaSources?.[0]?.Id;
+    lastPositionRef.current = resumeAt;
+    resumeTargetRef.current = resumeAt;
 
     v.volume = volume;
     v.muted = muted;
@@ -132,15 +142,36 @@ export function Player({ item, initialPosition = 0, onClose }) {
     setAudioTrack(-1);
     setSubtitleTrack(-1);
 
-    const resumeAndPlay = () => {
-      if (resumeAt > 1) {
-        try {
-          v.currentTime = resumeAt;
-        } catch {}
+    let resumeConfirmed = resumeAt <= 1;
+    let resumeAttempts = 0;
+    const applyResumePosition = () => {
+      if (resumeConfirmed || v.readyState < 1 || v.seeking || resumeAttempts >= 3) return;
+      try {
+        resumeAttempts += 1;
+        v.currentTime = resumeAt;
+        lastPositionRef.current = resumeAt;
+        setCurrent(resumeAt);
+      } catch {
+        // Some engines expose metadata just before the seekable timeline is
+        // ready. `canplay` below gives the resume one more safe opportunity.
       }
+    };
+    const confirmResumePosition = () => {
+      if (resumeConfirmed) return;
+      if (v.currentTime >= resumeAt - 2) {
+        resumeConfirmed = true;
+        resumeTargetRef.current = 0;
+      }
+      else applyResumePosition();
+    };
+    const resumeAndPlay = () => {
+      applyResumePosition();
       v.playbackRate = speed;
       v.play().catch(() => {});
     };
+    v.addEventListener("loadedmetadata", applyResumePosition);
+    v.addEventListener("canplay", confirmResumePosition);
+    v.addEventListener("seeked", confirmResumePosition);
 
     // Direct play has no HLS master playlist to carry subtitle renditions,
     // so text tracks are added by hand from the item's own subtitle
@@ -216,7 +247,6 @@ export function Player({ item, initialPosition = 0, onClose }) {
     (async () => {
       let mode = fallbackMode();
       let playSessionId = null;
-
       // Ask Jellyfin whether this browser can play the source as-is before
       // paying for a transcode — most files don't need one, and this is
       // what stops every video defaulting to a re-encoded H264/AAC stream.
@@ -332,6 +362,9 @@ export function Player({ item, initialPosition = 0, onClose }) {
       }
       untrackFns.forEach((fn) => fn());
       clearTimeout(reportTimer.current);
+      v.removeEventListener("loadedmetadata", applyResumePosition);
+      v.removeEventListener("canplay", confirmResumePosition);
+      v.removeEventListener("seeked", confirmResumePosition);
       v.onloadedmetadata = null;
       v.removeAttribute("src");
       v.load();
@@ -366,10 +399,44 @@ export function Player({ item, initialPosition = 0, onClose }) {
 
   useEffect(() => {
     const fsEl = () => document.fullscreenElement || document.webkitFullscreenElement;
+    let resumeListenerTimer;
+    let resumeCheckTimer;
+    let removeResumePauseListener;
+    const keepPlayingAfterExit = () => {
+      const v = videoRef.current;
+      const state = fullscreenPlaybackRef.current;
+      if (!v || !state.shouldResume || userPausedRef.current) return;
+
+      clearTimeout(resumeListenerTimer);
+      clearTimeout(resumeCheckTimer);
+      removeResumePauseListener?.();
+      state.position = Math.max(state.position, v.currentTime || 0);
+
+      // Keep the same media element and timeline. Only correct browsers that
+      // pause as part of their fullscreen exit transition.
+      if (state.position - v.currentTime > 1) v.currentTime = state.position;
+      const resumeIfPaused = () => {
+        if (!userPausedRef.current && v.paused) v.play().catch(() => {});
+      };
+      const onTransitionPause = () => {
+        v.removeEventListener("pause", onTransitionPause);
+        requestAnimationFrame(resumeIfPaused);
+      };
+      removeResumePauseListener = () => v.removeEventListener("pause", onTransitionPause);
+      v.addEventListener("pause", onTransitionPause);
+      requestAnimationFrame(resumeIfPaused);
+      resumeCheckTimer = setTimeout(resumeIfPaused, 250);
+      resumeListenerTimer = setTimeout(() => v.removeEventListener("pause", onTransitionPause), 1000);
+    };
     const onFsChange = () => {
       const isFs = Boolean(fsEl());
       setIsFullscreen(isFs);
-      if (!isFs) {
+      if (isFs) {
+        const v = videoRef.current;
+        if (v && !v.paused) {
+          fullscreenPlaybackRef.current = { shouldResume: true, position: v.currentTime };
+        }
+      } else {
         // Browsers exit fullscreen on Escape themselves, and this event
         // fires before that same keypress reaches our own keydown handler
         // below — so by the time it checks document.fullscreenElement,
@@ -381,33 +448,21 @@ export function Player({ item, initialPosition = 0, onClose }) {
         setTimeout(() => {
           justExitedFsRef.current = false;
         }, 0);
+        keepPlayingAfterExit();
       }
     };
     // iOS Safari has no Fullscreen API for arbitrary elements — only the
     // <video> itself can go fullscreen, with its own begin/end events.
-    const onVideoFsBegin = () => setIsFullscreen(true);
+    const onVideoFsBegin = () => {
+      const v = videoRef.current;
+      if (v && !v.paused) {
+        fullscreenPlaybackRef.current = { shouldResume: true, position: v.currentTime };
+      }
+      setIsFullscreen(true);
+    };
     const onVideoFsEnd = () => {
       setIsFullscreen(false);
-      // iOS Safari can pause on its own when leaving native fullscreen, even
-      // when the user is just returning to inline playback rather than
-      // dismissing the video — and not necessarily right away, so a fixed
-      // delay (an earlier version of this fix tried 150ms, then a single
-      // animation frame) can still check before it happens and get silently
-      // undone a moment later (played for an instant, then stopped again).
-      // Catch the actual pause event instead — but only react to it once:
-      // an earlier version of *this* fix kept resisting every pause for a
-      // full second, which visibly fought iOS's own transition (repeated
-      // pause/resume flicker) instead of cleanly correcting it. If nothing
-      // pauses, nothing happens — there's nothing to fix.
-      const fsv = videoRef.current;
-      if (!fsv) return;
-      const resist = () => {
-        fsv.removeEventListener("pause", resist);
-        clearTimeout(timer);
-        if (!userPausedRef.current) fsv.play().catch(() => {});
-      };
-      fsv.addEventListener("pause", resist);
-      const timer = setTimeout(() => fsv.removeEventListener("pause", resist), 800);
+      keepPlayingAfterExit();
     };
     const onPipEnter = () => setIsPiP(true);
     const onPipLeave = () => setIsPiP(false);
@@ -425,6 +480,9 @@ export function Player({ item, initialPosition = 0, onClose }) {
       v?.removeEventListener("webkitendfullscreen", onVideoFsEnd);
       v?.removeEventListener("enterpictureinpicture", onPipEnter);
       v?.removeEventListener("leavepictureinpicture", onPipLeave);
+      clearTimeout(resumeListenerTimer);
+      clearTimeout(resumeCheckTimer);
+      removeResumePauseListener?.();
     };
   }, []);
 
@@ -435,6 +493,12 @@ export function Player({ item, initialPosition = 0, onClose }) {
     if (fsEl) {
       (document.exitFullscreen || document.webkitExitFullscreen)?.call(document).catch?.(() => {});
       return;
+    }
+    if (v) {
+      fullscreenPlaybackRef.current = {
+        shouldResume: !v.paused && !userPausedRef.current,
+        position: v.currentTime,
+      };
     }
     if (el?.requestFullscreen) {
       el.requestFullscreen().catch(() => {
@@ -506,8 +570,9 @@ export function Player({ item, initialPosition = 0, onClose }) {
       if (!v || !item) return;
       const ms = item.MediaSources?.[0]?.Id;
       const d = v.duration;
-      const nearlyDone = d > 0 && v.currentTime / d > 0.9;
-      const watchedEnough = v.currentTime > 15;
+      const finalPosition = Math.max(lastPositionRef.current || 0, v.currentTime || 0);
+      const nearlyDone = d > 0 && finalPosition / d > 0.9;
+      const watchedEnough = finalPosition > 15;
       client.stopPlayback(item.Id, {
         // Reporting a position here is what updates the saved resume point
         // server-side — only do that once the position is meaningful.
@@ -515,7 +580,7 @@ export function Player({ item, initialPosition = 0, onClose }) {
         // a few seconds in, from closing right after opening to test
         // something) would silently overwrite a real, further-along resume
         // position with that. Session cleanup itself still always runs.
-        positionTicks: watchedEnough || nearlyDone ? secondsToTicks(v.currentTime) : undefined,
+        positionTicks: watchedEnough || nearlyDone ? secondsToTicks(finalPosition) : undefined,
         mediaSourceId: ms,
         playSessionId: playSessionIdRef.current,
       });
@@ -523,7 +588,7 @@ export function Player({ item, initialPosition = 0, onClose }) {
       if (nearlyDone) {
         client.markPlayed(item.Id, { mediaSourceId: ms });
       } else if (watchedEnough) {
-        report(v.currentTime);
+        report(finalPosition);
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -537,11 +602,15 @@ export function Player({ item, initialPosition = 0, onClose }) {
     // timeupdate fires several times a second; the controls only display whole
     // seconds, so update React state once the displayed second changes.
     setCurrent((prev) => (Math.floor(v.currentTime) === Math.floor(prev) ? prev : v.currentTime));
+    if (!resumeTargetRef.current || v.currentTime >= resumeTargetRef.current - 2) {
+      lastPositionRef.current = v.currentTime;
+      resumeTargetRef.current = 0;
+    }
     setDuration(v.duration || 0);
     if (!reportTimer.current) {
       reportTimer.current = setTimeout(() => {
         reportTimer.current = null;
-        report(v.currentTime);
+        report(reportablePosition(v));
       }, 5000);
     }
   };
@@ -557,7 +626,7 @@ export function Player({ item, initialPosition = 0, onClose }) {
       userPausedRef.current = true;
       v.pause();
       setPlaying(false);
-      report(v.currentTime);
+      report(reportablePosition(v));
     }
   }, [report]);
 
@@ -566,6 +635,8 @@ export function Player({ item, initialPosition = 0, onClose }) {
       const v = videoRef.current;
       if (!v) return;
       v.currentTime = Math.max(0, Math.min(v.duration || 0, v.currentTime + delta));
+      resumeTargetRef.current = 0;
+      lastPositionRef.current = v.currentTime;
       setCurrent(v.currentTime);
       report(v.currentTime);
     },
@@ -577,6 +648,8 @@ export function Player({ item, initialPosition = 0, onClose }) {
       const v = videoRef.current;
       if (!v || !v.duration) return;
       v.currentTime = frac * v.duration;
+      resumeTargetRef.current = 0;
+      lastPositionRef.current = v.currentTime;
       setCurrent(v.currentTime);
       report(v.currentTime);
     },

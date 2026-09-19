@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.0-beta.6 (unreleased)
+
+Bug fixes:
+
+- Fixed direct-played video failing to load, or silently ignoring resume/seek, on cross-origin Jellyfin servers (a public server address, not proxied through Jellyflow's own nginx). The previous release added `crossorigin="anonymous"` to the `<video>` element to support subtitle tracks, but that also applies to the main video fetch — and browsers require the media server to send CORS headers once that's set, which Jellyfin's plain streaming endpoints don't do by default. Reverted, since a working video matters more than working captions: this is a real trade-off, not a free fix, and cross-origin direct-play subtitles are a known limitation for unproxied servers until we have a better answer (confirmed both directions by testing against real CORS/no-CORS servers).
+- Fixed the seek bar not responding to a drag on touch devices — it only had a tap handler, so a drag fell through to the browser's own touch handling instead: panning the page, or on a fast drag, triggering swipe-to-go-back navigation. It now uses Pointer Events with `touch-action: none` to capture the gesture itself, tracks the specific pointer so a second touch on the bar mid-drag can't hijack it, discards (rather than commits) an OS-cancelled gesture, and keeps the control bar from auto-hiding mid-drag.
+- iOS Safari often pauses on its own when leaving its native fullscreen video player, even when returning to inline playback rather than being dismissed. Playback now resumes automatically if it was still meant to be playing — tracked by explicit user intent (did *you* pause it?) rather than guessing from a fixed delay, which could still race a slow OS pause or override a pause you made in that window.
+
 ## 0.1.0-beta.5 — 2026-09-19
 
 Features:

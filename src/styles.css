@@ -1957,6 +1957,10 @@ img {
   border-radius: 99px;
   background: rgba(205, 212, 244, 0.17);
   cursor: pointer;
+  /* Without this, a touch-drag here is read as a page pan by the browser —
+     scrolling, or on a fast horizontal drag, triggering swipe-to-go-back —
+     instead of being handled as a seek by the pointer handlers above. */
+  touch-action: none;
 }
 
 .player-fill {

@@ -55,6 +55,14 @@ export function Player({ item, initialPosition = 0, onClose }) {
   const idleTimer = useRef(null);
   const playSessionIdRef = useRef(null);
   const justExitedFsRef = useRef(false);
+  // Intent, not state: only set by the user explicitly pausing/playing (the
+  // toggle button, spacebar), never by onPause/onPlay — the video's own
+  // paused state can't tell an OS-driven pause (see onVideoFsEnd) from the
+  // user's own.
+  const userPausedRef = useRef(false);
+  const activePointerIdRef = useRef(null);
+  const scrubRafRef = useRef(null);
+  const pendingScrubFracRef = useRef(null);
   const prefs = useMemo(() => loadPrefs(), []);
 
   const [playing, setPlaying] = useState(false);
@@ -78,6 +86,7 @@ export function Player({ item, initialPosition = 0, onClose }) {
   const [uiVisible, setUiVisible] = useState(true);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isPiP, setIsPiP] = useState(false);
+  const [scrubFrac, setScrubFrac] = useState(null);
 
 
   function isVideo(it) {
@@ -116,6 +125,7 @@ export function Player({ item, initialPosition = 0, onClose }) {
     v.volume = volume;
     v.muted = muted;
     v.playbackRate = speed;
+    userPausedRef.current = false;
     setBuffering(true);
     setAudioTracks([]);
     setSubtitleTracks([]);
@@ -376,7 +386,23 @@ export function Player({ item, initialPosition = 0, onClose }) {
     // iOS Safari has no Fullscreen API for arbitrary elements — only the
     // <video> itself can go fullscreen, with its own begin/end events.
     const onVideoFsBegin = () => setIsFullscreen(true);
-    const onVideoFsEnd = () => setIsFullscreen(false);
+    const onVideoFsEnd = () => {
+      setIsFullscreen(false);
+      // iOS Safari often pauses on its own when leaving native fullscreen,
+      // even when the user is just returning to inline playback rather than
+      // dismissing the video — resume unless the user themselves asked to
+      // pause. userPausedRef is intent (only set by the toggle/keyboard
+      // handlers), not "is currently paused" — the video's own paused state
+      // can't distinguish an OS-driven pause from the user's own, and an
+      // earlier version of this fix used a fixed delay to guess instead of
+      // checking that, which could still race a slow OS pause or override a
+      // pause the user made in that window. One rAF is enough to run after
+      // any same-tick native pause has already landed.
+      requestAnimationFrame(() => {
+        const v = videoRef.current;
+        if (v && v.paused && !userPausedRef.current) v.play().catch(() => {});
+      });
+    };
     const onPipEnter = () => setIsPiP(true);
     const onPipLeave = () => setIsPiP(false);
     const v = videoRef.current;
@@ -510,9 +536,11 @@ export function Player({ item, initialPosition = 0, onClose }) {
     const v = videoRef.current;
     if (!v) return;
     if (v.paused) {
+      userPausedRef.current = false;
       v.play().catch(() => {});
       setPlaying(true);
     } else {
+      userPausedRef.current = true;
       v.pause();
       setPlaying(false);
       report(v.currentTime);
@@ -541,11 +569,71 @@ export function Player({ item, initialPosition = 0, onClose }) {
     [report],
   );
 
-  const onTrackClick = (e) => {
-    const track = e.currentTarget;
-    const r = track.getBoundingClientRect();
-    seekTo(Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)));
-  };
+  // Pointer Events (not onClick) so this also works as a real drag on touch:
+  // without capturing the gesture here and disabling the browser's own
+  // touch handling on this element (see touch-action in styles.css), a
+  // drag on the seek bar was instead read as a page pan — scrolling the
+  // page, or on a fast horizontal drag, triggering the browser's
+  // swipe-to-go-back navigation.
+  const fracFromEvent = useCallback((e) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    return Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
+  }, []);
+
+  // Coalesces rapid pointermove events into at most one state update (and
+  // re-render) per frame, rather than one per event — pointermove can fire
+  // well above screen refresh rate.
+  const scheduleScrubUpdate = useCallback((frac) => {
+    pendingScrubFracRef.current = frac;
+    if (scrubRafRef.current) return;
+    scrubRafRef.current = requestAnimationFrame(() => {
+      scrubRafRef.current = null;
+      setScrubFrac(pendingScrubFracRef.current);
+    });
+  }, []);
+
+  const onTrackPointerDown = useCallback(
+    (e) => {
+      if (!duration) return; // nothing to seek yet — avoid a scrub that seekTo() will silently drop
+      e.currentTarget.setPointerCapture(e.pointerId);
+      activePointerIdRef.current = e.pointerId;
+      scheduleScrubUpdate(fracFromEvent(e));
+      wake();
+    },
+    [duration, fracFromEvent, scheduleScrubUpdate, wake],
+  );
+
+  const onTrackPointerMove = useCallback(
+    (e) => {
+      if (activePointerIdRef.current !== e.pointerId) return; // a second pointer on the track shouldn't hijack the drag
+      scheduleScrubUpdate(fracFromEvent(e));
+      wake();
+    },
+    [fracFromEvent, scheduleScrubUpdate, wake],
+  );
+
+  // Shared by pointerup (commit the seek), pointercancel (the browser
+  // aborted the gesture — e.g. a second touch, or an edge-swipe reclaimed
+  // for navigation — discard it, don't seek) and lostpointercapture (a
+  // catch-all: guarantees the scrub state can't get stuck if up/cancel
+  // never fires for some reason).
+  const endScrub = useCallback(
+    (e, commit) => {
+      if (activePointerIdRef.current !== e.pointerId) return;
+      activePointerIdRef.current = null;
+      if (scrubRafRef.current) {
+        cancelAnimationFrame(scrubRafRef.current);
+        scrubRafRef.current = null;
+      }
+      if (commit) seekTo(fracFromEvent(e));
+      setScrubFrac(null);
+    },
+    [fracFromEvent, seekTo],
+  );
+
+  const onTrackPointerUp = useCallback((e) => endScrub(e, true), [endScrub]);
+  const onTrackPointerCancel = useCallback((e) => endScrub(e, false), [endScrub]);
+  const onTrackLostPointerCapture = useCallback((e) => endScrub(e, false), [endScrub]);
 
   const changeVolume = useCallback((v01) => {
     const v = videoRef.current;
@@ -655,13 +743,23 @@ export function Player({ item, initialPosition = 0, onClose }) {
     };
   }, []);
 
-  const pct = duration ? current / duration : 0;
-  const mediaStreams = item?.MediaSources?.[0]?.MediaStreams || [];
-  const videoStream = mediaStreams.find((s) => s.Type === "Video");
-  const audioStream = mediaStreams.find((s) => s.Type === "Audio");
-  const chapters = (item?.Chapters || [])
-    .map((c) => ({ name: c.Name, time: ticksToSeconds(c.StartPositionTicks) }))
-    .filter((c) => duration > 0 && c.time >= 0 && c.time < duration);
+  useEffect(() => {
+    return () => {
+      if (scrubRafRef.current) cancelAnimationFrame(scrubRafRef.current);
+    };
+  }, []);
+
+  const pct = scrubFrac ?? (duration ? current / duration : 0);
+  const mediaStreams = useMemo(() => item?.MediaSources?.[0]?.MediaStreams || [], [item]);
+  const videoStream = useMemo(() => mediaStreams.find((s) => s.Type === "Video"), [mediaStreams]);
+  const audioStream = useMemo(() => mediaStreams.find((s) => s.Type === "Audio"), [mediaStreams]);
+  const chapters = useMemo(
+    () =>
+      (item?.Chapters || [])
+        .map((c) => ({ name: c.Name, time: ticksToSeconds(c.StartPositionTicks) }))
+        .filter((c) => duration > 0 && c.time >= 0 && c.time < duration),
+    [item, duration],
+  );
 
   /* --------------------------------- render -------------------------------- */
 
@@ -681,12 +779,20 @@ export function Player({ item, initialPosition = 0, onClose }) {
         <div className="player-top-title">{item?.Name}</div>
       </div>
 
+      {/* No crossOrigin attribute, deliberately: for a user-entered public
+          server (genuinely cross-origin, unlike the container's own proxied
+          setup — see the header comment in api/jellyfin.js), setting it
+          would require Jellyfin's plain streaming endpoint to send CORS
+          headers it doesn't send by default, and playback would fail
+          outright — confirmed by testing both ways. Without it, cross-origin
+          direct-play subtitles (directSubtitleTracks(), above) can't load,
+          since <track> cue fetching does require it for a cross-origin src.
+          Between "no captions" and "no video," this keeps video working. */}
       <video
         ref={videoRef}
         className="player-video"
         playsInline
         autoPlay
-        crossOrigin="anonymous"
         onPlay={() => setPlaying(true)}
         onPause={() => setPlaying(false)}
         onWaiting={() => setBuffering(true)}
@@ -726,7 +832,19 @@ export function Player({ item, initialPosition = 0, onClose }) {
       )}
 
       <div className="player-bottom">
-        <div className="player-track" onClick={onTrackClick} role="slider" aria-label="Seek">
+        <div
+          className="player-track"
+          onPointerDown={onTrackPointerDown}
+          onPointerMove={onTrackPointerMove}
+          onPointerUp={onTrackPointerUp}
+          onPointerCancel={onTrackPointerCancel}
+          onLostPointerCapture={onTrackLostPointerCapture}
+          role="slider"
+          aria-label="Seek"
+          aria-valuemin={0}
+          aria-valuemax={Math.round(duration) || 0}
+          aria-valuenow={Math.round(pct * (duration || 0))}
+        >
           <div className="player-fill" style={{ width: `${pct * 100}%` }} />
           {chapters.map((c, i) => (
             <div

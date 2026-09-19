@@ -52,7 +52,7 @@ To opt into experimental builds, replace the image tag in your Docker command or
 ghcr.io/louisllw/jellyflow:experimental
 ```
 
-Each experimental build also gets an immutable `experimental-sha-<commit>` tag for rollback. Moving between channels requires an explicit image-tag change; experimental builds never update `latest`.
+Each experimental build also gets an immutable `experimental-<short-commit>` tag for rollback. Moving between channels requires an explicit image-tag change; experimental builds never update `latest`.
 
 ## Features
 

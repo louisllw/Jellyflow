@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0-beta.6 (unreleased)
+## 0.1.0-beta.6 — 2026-09-19
 
 Bug fixes:
 

@@ -10,8 +10,7 @@
 
 services:
   jellyflow:
-    image: jellyflow:local
-    build: .
+    image: ghcr.io/louisllw/jellyflow:latest
     container_name: jellyflow
     ports:
       - "${PORT:-8080}:8080"

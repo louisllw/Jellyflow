@@ -1,76 +1,86 @@
 # Jellyflow
 
-A redesigned, flowing frontend for [Jellyfin](https://jellyfin.org) — dark, quiet, and built to let your library do the talking. One tiny static image, no database, no backend: point it at your existing Jellyfin instance and play.
+[![CI](https://github.com/louisllw/Jellyflow/actions/workflows/ci.yml/badge.svg)](https://github.com/louisllw/Jellyflow/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/louisllw/Jellyflow?include_prereleases)](https://github.com/louisllw/Jellyflow/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-7c5cff.svg)](LICENSE)
 
-## How it works
+A redesigned, flowing web client for [Jellyfin](https://jellyfin.org): dark, responsive and built to let your library do the talking.
 
-Jellyflow is a **pure client-side app**. On first run it asks for your server URL, username and password, then:
-
-1. `POST /Users/AuthenticateByName` authenticates directly with your Jellyfin server
-2. The password is discarded after sign-in; the resulting session token is stored in that browser's `localStorage`
-3. All metadata, posters, and streams are fetched directly from your server over its public API
-
-Because everything runs in your browser, the image ships **zero server-side code** — the container only serves the static bundle.
-
-### Your server must allow cross-origin requests
-
-Jellyflow talks to your instance from a *different origin*, so your server needs to permit CORS. **Jellyfin's default installation is fine** — the stock config sends `Access-Control-Allow-Origin: *` and Jellyflow has been verified against a live public instance. If your server sits behind a reverse proxy, make sure it forwards (or sets) the `Access-Control-Allow-Origin` and preflight headers.
+> **Beta software:** Jellyflow is an independent community project. It is not affiliated with, maintained by, or endorsed by the Jellyfin project. Keep a standard Jellyfin client available while testing.
 
 ## Run it
 
-### Docker (recommended)
+Jellyflow has no backend or database. It connects directly from your browser to a Jellyfin server you control.
 
 ```sh
-# Build locally, then run on any free port
-docker build -t jellyflow .
-docker run -d --name jellyflow -p 8080:8080 jellyflow
+docker run -d \
+  --name jellyflow \
+  -p 8080:8080 \
+  -e JELLYFIN_URL=https://jellyfin.example.com \
+  ghcr.io/louisllw/jellyflow:latest
 ```
 
-Open <http://localhost:8080>, enter your server details on the connect screen (e.g. `https://jellyfin.example.com`), and you're in.
+Open <http://localhost:8080>. `JELLYFIN_URL` only prefills the connect screen and may be omitted; no Jellyfin hostname is hard-coded into the image.
 
-### Docker Compose
+Or use the included Compose file:
 
 ```sh
-# optional: prefill the server URL on the connect screen
-#   JELLYFIN_URL=https://jellyfin.example.com
+cp .env.example .env
 docker compose up -d
 ```
 
-Then open <http://localhost:8080> — the connect screen arrives with your URL already in place.
-
-### Build from source
-
-```sh
-docker build -t jellyflow .
-docker run -d -p 8080:8080 jellyflow
-```
+Both `linux/amd64` and `linux/arm64` images are published, covering common servers and Apple Silicon Macs.
 
 ## Features
 
-- **Connect screen** — sign in against any Jellyfin instance; the session is kept in your browser only
-- **Home** — a breathing hero for the night's pick, then shelves: *Continue watching* (with progress rings), *Up next*, *New in your library*
-- **Browse** — the whole library as a wall, filter by type (films / series / episodes / music / video), sort by newest / A–Z / year / rating, paginated
-- **Live TV** — a six-hour channel guide with programme details, channel favourites, one-off and series recording controls, a recordings library, and direct channel playback
-- **Detail** — synopsis, specs (year, length, rating, status, genres), cast, and for series: expandable season/episode blocks with per-episode progress
-- **Player** — full-screen hls.js playback of the adaptive (`.m3u8`) stream: play/pause, seek bar, ±10 s, volume/mute, keyboard shortcuts (space, `k`, `j`/`l`, `m`, esc), resume where you left off, and progress reported back to Jellyfin as you watch (marks played at ≥ 90 %)
-- **Search** — the top bar is always listening; type and results stream in
-- **Settings** — reconnect with new credentials or sign out; the connection details are shown in full
-- Fully responsive down to phone width; honours `prefers-reduced-motion`
+- Home shelves for continue watching, up next and new additions, with a rotating library hero.
+- Full-library browsing, filtering, sorting, pagination and instant search.
+- Movie and series details with redesigned seasons, episodes, cast and watch progress.
+- Live TV guide, programme details, channel favourites, recording controls and recordings library.
+- Responsive HLS player with resume, seek, volume, mobile controls, keyboard shortcuts and progress reporting.
+- Runtime-configurable server connection, responsive navigation and reduced-motion support.
+
+## Known beta limitations
+
+- Playback currently needs broader capability-aware negotiation and codec coverage.
+- Automatic next episode and a playback queue are not implemented.
+- General favourites and manual watched/unwatched controls are incomplete.
+- Music views, casting, SyncPlay and downloads are incomplete.
+- Jellyflow must be allowed by your Jellyfin CORS configuration. An HTTPS Jellyflow page also requires an HTTPS Jellyfin endpoint.
+
+See the [roadmap](ROADMAP.md) and [open issues](https://github.com/louisllw/Jellyflow/issues) for planned work.
+
+## How authentication works
+
+1. Jellyflow sends the sign-in request directly to your Jellyfin server.
+2. The password is discarded after sign-in.
+3. Jellyfin's session token is stored in that browser's `localStorage` and is removed when you sign out.
+
+The container serves static files only. Treat any device with an active session as signed in, use HTTPS outside a trusted local network, and never paste tokens into bug reports.
 
 ## Development
 
+Node.js 22 is recommended.
+
 ```sh
-npm install
-npm run dev          # Vite dev server
+npm ci
+npm run dev
 ```
 
-Copy `.env.example` to `.env` only when using Docker Compose. Local `.env` files, dependencies, and generated builds are excluded from Git.
+Build and check the project with:
 
-## What's in the image
+```sh
+npm audit --audit-level=high
+npm run build
+docker build -t jellyflow:test .
+```
 
-| Layer | Size |
-|---|---|
-| App bundle (JS + CSS, gzipped) | ~ 256 kB |
-| nginx:1.27-alpine base | ~ 12 MB |
+The production container runs nginx as an unprivileged user, validates runtime configuration and sends restrictive security headers. See [CONTRIBUTING.md](CONTRIBUTING.md) before submitting a change and [SECURITY.md](SECURITY.md) for private vulnerability reporting.
 
-Long-lived immutable caching on fingerprinted assets, SPA deep-link fallback, a built-in healthcheck, validated runtime configuration, and restrictive browser security headers. No ports are exposed besides the one you map.
+## Project transparency
+
+Development has included substantial AI-assisted implementation and review. Maintainers remain responsible for accepting changes, running checks and documenting limitations; contributors are asked to disclose substantial AI-assisted changes for appropriate review.
+
+## License
+
+Jellyflow is available under the [MIT License](LICENSE).

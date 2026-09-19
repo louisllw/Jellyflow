@@ -7,7 +7,7 @@
 #
 # The result is a single ~15 MB image anyone can run:
 #
-#   docker run -d -p 8080:8080 ghcr.io/yourname/jellyflow
+#   docker run -d -p 8080:8080 ghcr.io/louisllw/jellyflow:latest
 #
 # …then open http://localhost:8080 and point it at your Jellyfin server.
 
@@ -23,6 +23,9 @@ RUN npm run build
 RUN rm -f dist/seed.html
 
 FROM nginx:1.27-alpine
+LABEL org.opencontainers.image.source="https://github.com/louisllw/Jellyflow" \
+      org.opencontainers.image.description="A flowing, independent web client for Jellyfin" \
+      org.opencontainers.image.licenses="MIT"
 COPY nginx-main.conf /etc/nginx/nginx.conf
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/dist /usr/share/nginx/html

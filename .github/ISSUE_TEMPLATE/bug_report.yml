@@ -1,0 +1,58 @@
+name: Bug report
+description: Report something that is broken or behaves unexpectedly
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a problem. Never include passwords, access tokens, private server addresses, or identifying library screenshots.
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: Describe the problem and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open …
+        2. Select …
+        3. See …
+    validations:
+      required: true
+  - type: input
+    id: jellyflow-version
+    attributes:
+      label: Jellyflow version
+      placeholder: v0.1.0-beta.1 or container digest
+    validations:
+      required: true
+  - type: input
+    id: jellyfin-version
+    attributes:
+      label: Jellyfin version
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Browser and operating system
+      placeholder: Safari 20 on iOS 20
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: Sanitised logs or media details
+      description: Remove tokens, hostnames, usernames and private media information first.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Safety check
+      options:
+        - label: I have removed credentials, tokens and private server or library information.
+          required: true

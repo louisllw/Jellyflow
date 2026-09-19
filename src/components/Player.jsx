@@ -390,27 +390,24 @@ export function Player({ item, initialPosition = 0, onClose }) {
       setIsFullscreen(false);
       // iOS Safari can pause on its own when leaving native fullscreen, even
       // when the user is just returning to inline playback rather than
-      // dismissing the video — and not necessarily right away: an earlier
-      // version of this fix waited a fixed delay (first 150ms, then a
-      // single animation frame) and re-played once, but iOS's own pause
-      // could still land *after* that check, silently undoing the resume a
-      // moment later (played for an instant, then stopped again). Instead
-      // of guessing when that pause happens, actively resist any pause for
-      // a short window after leaving fullscreen — except one the user asked
-      // for themselves (userPausedRef is intent, set only by the
-      // toggle/keyboard handlers, not by every pause event).
+      // dismissing the video — and not necessarily right away, so a fixed
+      // delay (an earlier version of this fix tried 150ms, then a single
+      // animation frame) can still check before it happens and get silently
+      // undone a moment later (played for an instant, then stopped again).
+      // Catch the actual pause event instead — but only react to it once:
+      // an earlier version of *this* fix kept resisting every pause for a
+      // full second, which visibly fought iOS's own transition (repeated
+      // pause/resume flicker) instead of cleanly correcting it. If nothing
+      // pauses, nothing happens — there's nothing to fix.
       const fsv = videoRef.current;
       if (!fsv) return;
-      let resisting = true;
       const resist = () => {
-        if (resisting && !userPausedRef.current) fsv.play().catch(() => {});
+        fsv.removeEventListener("pause", resist);
+        clearTimeout(timer);
+        if (!userPausedRef.current) fsv.play().catch(() => {});
       };
       fsv.addEventListener("pause", resist);
-      resist();
-      setTimeout(() => {
-        resisting = false;
-        fsv.removeEventListener("pause", resist);
-      }, 1000);
+      const timer = setTimeout(() => fsv.removeEventListener("pause", resist), 800);
     };
     const onPipEnter = () => setIsPiP(true);
     const onPipLeave = () => setIsPiP(false);
@@ -508,16 +505,24 @@ export function Player({ item, initialPosition = 0, onClose }) {
       const v = videoRef.current;
       if (!v || !item) return;
       const ms = item.MediaSources?.[0]?.Id;
+      const d = v.duration;
+      const nearlyDone = d > 0 && v.currentTime / d > 0.9;
+      const watchedEnough = v.currentTime > 15;
       client.stopPlayback(item.Id, {
-        positionTicks: secondsToTicks(v.currentTime),
+        // Reporting a position here is what updates the saved resume point
+        // server-side — only do that once the position is meaningful.
+        // Unconditionally reporting wherever playback happened to be (e.g.
+        // a few seconds in, from closing right after opening to test
+        // something) would silently overwrite a real, further-along resume
+        // position with that. Session cleanup itself still always runs.
+        positionTicks: watchedEnough || nearlyDone ? secondsToTicks(v.currentTime) : undefined,
         mediaSourceId: ms,
         playSessionId: playSessionIdRef.current,
       });
       if (isLiveTv(item)) return;
-      const d = v.duration;
-      if (d > 0 && v.currentTime / d > 0.9) {
+      if (nearlyDone) {
         client.markPlayed(item.Id, { mediaSourceId: ms });
-      } else if (v.currentTime > 15) {
+      } else if (watchedEnough) {
         report(v.currentTime);
       }
     };

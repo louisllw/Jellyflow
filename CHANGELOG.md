@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.0-beta.8 (unreleased)
+
+Bug fixes:
+
+- Fixed resume position getting silently overwritten by closing the player after only briefly watching (including just opening a video to test something). `Sessions/Playing/Stopped`, added in 0.1.0-beta.5 to properly close out a session on exit, reported the current position unconditionally — with no minimum-watched guard like the progress-reporting and mark-played calls right next to it already have — so it could reset a real, further-along saved resume position back to wherever playback happened to be at close. Session cleanup itself still always runs; only the reported position is now gated the same way the rest of this function already was.
+- The previous iOS fullscreen-exit fix resisted *every* pause for a full second after leaving fullscreen, which could visibly fight iOS's own transition (repeated pause/resume flicker) instead of cleanly correcting it. It now catches the pause once and stops, rather than repeatedly re-asserting play.
+
 ## 0.1.0-beta.7 — 2026-09-19
 
 Bug fixes:

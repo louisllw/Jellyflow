@@ -1693,11 +1693,11 @@ img {
 
 .episode-browser-list {
   display: flex;
-  gap: 12px;
+  gap: 10px;
   overflow-x: auto;
   scroll-snap-type: x proximity;
   scroll-behavior: smooth;
-  padding: 14px;
+  padding: 10px;
   border: 1px solid var(--line);
   border-radius: 16px;
   background:
@@ -1707,13 +1707,13 @@ img {
 
 .episode-browser-list .episode-card {
   position: relative;
-  flex: 0 0 clamp(270px, 30vw, 360px);
+  flex: 0 0 clamp(210px, 23vw, 270px);
   scroll-snap-align: start;
   display: grid;
   grid-template-columns: 1fr;
   align-content: start;
-  gap: 12px;
-  padding: 0 0 12px;
+  gap: 8px;
+  padding: 0 0 10px;
   border: 0;
   border-radius: 12px;
   background: rgba(7, 9, 20, 0.46);
@@ -1731,11 +1731,17 @@ img {
 }
 
 .episode-browser-list .episode-copy {
-  padding-inline: 13px;
+  padding-inline: 11px;
 }
 
 .episode-browser-list .episode-overview {
-  -webkit-line-clamp: 3;
+  margin-block: 5px 7px;
+  font-size: 12px;
+  -webkit-line-clamp: 2;
+}
+
+.episode-browser-list .episode-title {
+  font-size: clamp(15px, 1.6vw, 18px);
 }
 
 .episode-browser-list .episode-play {
@@ -1873,10 +1879,10 @@ img {
 
 .episode-card {
   display: grid;
-  grid-template-columns: minmax(180px, 230px) minmax(0, 1fr) auto;
+  grid-template-columns: minmax(160px, 200px) minmax(0, 1fr) auto;
   align-items: center;
-  gap: clamp(16px, 2.5vw, 26px);
-  padding: 18px 2px;
+  gap: clamp(14px, 2vw, 22px);
+  padding: 13px 2px;
   border-top: 1px solid var(--line);
 }
 
@@ -3423,7 +3429,7 @@ img {
   }
 
   .seasons {
-    margin-top: 44px;
+    margin-top: 36px;
   }
 
   .seasons-heading {
@@ -3473,9 +3479,9 @@ img {
   }
 
   .episode-browser-list .episode-card {
-    flex-basis: min(78vw, 310px);
-    gap: 8px;
-    padding-bottom: 11px;
+    flex-basis: min(64vw, 240px);
+    gap: 6px;
+    padding-bottom: 9px;
   }
 
   .episode-browser-list .episode-copy {
@@ -3483,10 +3489,10 @@ img {
   }
 
   .episode-card {
-    grid-template-columns: minmax(108px, 34vw) minmax(0, 1fr);
+    grid-template-columns: minmax(96px, 30vw) minmax(0, 1fr);
     align-items: start;
-    gap: 11px;
-    padding: 15px 0;
+    gap: 10px;
+    padding: 11px 0;
   }
 
   .episode-overview {

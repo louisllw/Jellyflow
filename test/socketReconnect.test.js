@@ -108,3 +108,64 @@ test("connectSocket does nothing without a token", async () => {
     delete globalThis.WebSocket;
   }
 });
+
+test("an ordinary authenticated 401 expires the session once", async () => {
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = async () => json({ Message: "Token is required." }, 401);
+  try {
+    const client = new Jellyfin({ serverUrl: "https://example.test", token: "dead", userId: "u" });
+    let expired = 0;
+    client.onSessionExpired = () => { expired += 1; };
+    await assert.rejects(client.items(), (error) => error.status === 401);
+    await assert.rejects(client.items(), (error) => error.status === 401);
+    assert.equal(expired, 1);
+    assert.equal(client._socketStopped, true);
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});
+
+test("a best-effort playback call still surfaces session expiry", async () => {
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = async () => json({ Message: "Token is required." }, 401);
+  try {
+    const client = new Jellyfin({ serverUrl: "https://example.test", token: "dead", userId: "u" });
+    let expired = 0;
+    client.onSessionExpired = () => { expired += 1; };
+    await client.reportProgress("item", { positionTicks: 10_000_000 });
+    assert.equal(expired, 1);
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});
+
+test("a permission-denied 403 does not expire a valid session", async () => {
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = async () => json({ Message: "Forbidden." }, 403);
+  try {
+    const client = new Jellyfin({ serverUrl: "https://example.test", token: "live", userId: "u" });
+    let expired = 0;
+    client.onSessionExpired = () => { expired += 1; };
+    await assert.rejects(client.items(), (error) => error.status === 403);
+    assert.equal(expired, 0);
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});
+
+test("logout ends the authenticated Jellyfin session", async () => {
+  const calls = [];
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    calls.push({ url, init });
+    return new Response(null, { status: 204 });
+  };
+  try {
+    const client = new Jellyfin({ serverUrl: "https://example.test", token: "live", userId: "u" });
+    await client.logout();
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+  assert.equal(new URL(calls[0].url).pathname, "/Sessions/Logout");
+  assert.equal(calls[0].init.method, "POST");
+});

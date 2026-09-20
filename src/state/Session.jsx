@@ -13,6 +13,7 @@ import {
   saveConfig,
   saveLastServer,
 } from "../api/jellyfin.js";
+import { retireClient } from "./sessionLifecycle.js";
 
 const Ctx = createContext(null);
 
@@ -31,6 +32,32 @@ export function SessionProvider({ children }) {
 
   const ready = Boolean(cfg && !booting);
 
+  const expireSession = useCallback((expiredClient) => {
+    // Ignore a late failure from a client that has already been replaced.
+    if (clientRef.current !== expiredClient) return;
+    expiredClient.disconnectSocket();
+    clearConfig();
+    clientRef.current = null;
+    setCfg(null);
+    setUser(null);
+    setBooting(false);
+    setAuthError("Your session expired — sign in again.");
+  }, []);
+
+  const installClient = useCallback((newCfg) => {
+    const previous = clientRef.current;
+    if (previous) {
+      const sameCredential = previous.serverUrl === newCfg.serverUrl && previous.token === newCfg.token;
+      retireClient(previous, { revoke: !sameCredential });
+    }
+    const next = new Jellyfin(newCfg);
+    next.onSessionExpired = () => expireSession(next);
+    clientRef.current = next;
+    next.registerCapabilities();
+    next.connectSocket();
+    return next;
+  }, [expireSession]);
+
   const connect = useCallback(async (serverUrl, username, password) => {
     const base = configuredServer || normalizeServerUrl(serverUrl);
     const { user: u, token } = await login(base, username.trim(), password);
@@ -44,14 +71,12 @@ export function SessionProvider({ children }) {
     };
     saveConfig(newCfg);
     saveLastServer(base);
-    clientRef.current = new Jellyfin(newCfg);
-    clientRef.current.registerCapabilities();
-    clientRef.current.connectSocket();
+    installClient(newCfg);
     setCfg(newCfg);
     setUser(u);
     setAuthError(null);
     return u;
-  }, [configuredServer, configuredServerName]);
+  }, [configuredServer, configuredServerName, installClient]);
 
   const connectWithQuickConnect = useCallback(async (serverUrl, secret) => {
     const base = configuredServer || normalizeServerUrl(serverUrl);
@@ -66,14 +91,12 @@ export function SessionProvider({ children }) {
     };
     saveConfig(newCfg);
     saveLastServer(base);
-    clientRef.current = new Jellyfin(newCfg);
-    clientRef.current.registerCapabilities();
-    clientRef.current.connectSocket();
+    installClient(newCfg);
     setCfg(newCfg);
     setUser(u);
     setAuthError(null);
     return u;
-  }, [configuredServer, configuredServerName]);
+  }, [configuredServer, configuredServerName, installClient]);
 
   // Step 1 of API-key sign-in: validate the key and hand back the server's
   // user list so the UI can ask which profile to act as.
@@ -96,22 +119,22 @@ export function SessionProvider({ children }) {
     };
     saveConfig(newCfg);
     saveLastServer(base);
-    clientRef.current = new Jellyfin(newCfg);
-    clientRef.current.registerCapabilities();
-    clientRef.current.connectSocket();
+    installClient(newCfg);
     setCfg(newCfg);
     setUser(user);
     setAuthError(null);
     return user;
-  }, [configuredServer, configuredServerName]);
+  }, [configuredServer, configuredServerName, installClient]);
 
   const disconnect = useCallback(() => {
-    clientRef.current?.disconnectSocket();
-    clearConfig();
+    const current = clientRef.current;
     clientRef.current = null;
+    retireClient(current, { revoke: true });
+    clearConfig();
     setCfg(null);
     setUser(null);
     setBooting(false);
+    setAuthError(null);
   }, []);
 
   // Revalidate a stored session on load.
@@ -121,25 +144,16 @@ export function SessionProvider({ children }) {
       return;
     }
     let alive = true;
-    clientRef.current = new Jellyfin(cfg);
+    const bootClient = new Jellyfin(cfg);
+    bootClient.onSessionExpired = () => expireSession(bootClient);
+    clientRef.current = bootClient;
     (async () => {
       try {
-        const u = await clientRef.current.me();
+        const u = await bootClient.me();
         if (!alive) return;
         setUser(u);
-        clientRef.current.registerCapabilities();
-        // The socket keeps reconnecting on every close; if its auth probe
-        // finds the token is dead, stop the loop and surface re-sign-in the
-        // same way a failed boot revalidation does.
-        clientRef.current.onSessionExpired = () => {
-          if (!alive) return;
-          clearConfig();
-          clientRef.current = null;
-          setCfg(null);
-          setUser(null);
-          setAuthError("Your session expired — sign in again.");
-        };
-        clientRef.current.connectSocket();
+        bootClient.registerCapabilities();
+        bootClient.connectSocket();
         // Replace, don't mutate: cfg lives in state, and mutating it in place
         // would skip re-renders for anything keyed on the object's identity.
         if (u && u.Policy) setCfg((c) => (c ? { ...c, Policy: u.Policy } : c));
@@ -158,10 +172,10 @@ export function SessionProvider({ children }) {
     })();
     return () => {
       alive = false;
-      clientRef.current?.disconnectSocket();
+      bootClient.disconnectSocket();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [expireSession]);
 
   const client = clientRef.current;
 

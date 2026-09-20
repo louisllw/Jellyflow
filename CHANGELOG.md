@@ -4,6 +4,8 @@
 
 Bug fixes:
 
+- Session expiry now applies to ordinary authenticated API requests as well as socket reconnects, and the re-sign-in action clears its error state instead of trapping the app on the session-ended screen.
+- Signing out now revokes password and Quick Connect sessions on Jellyfin while administrator-created API keys remain server-managed. Replacing a connection also disconnects and retires the previous client instead of leaving its socket alive.
 - Query-string authentication now uses Jellyfin 12's `ApiKey` parameter for WebSockets, images, subtitles, trickplay and media URLs. This restores socket and media authentication after Jellyfin 12 disabled the legacy lowercase `api_key` parameter.
 - The SyncPlay socket no longer reconnects forever when its session token is dead (for example after server-side sign-out or a token cleared by an admin). Each reconnect now re-validates the token first; on a 401/403 it stops retrying and the app clears the local session with the "Your session expired — sign in again." prompt instead of spamming the server with an unauthenticated `/socket` request every few seconds.
 - `connectSocket` also refuses to start without a token, and an unparseable server URL no longer throws out of the reconnect path.

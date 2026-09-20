@@ -30,7 +30,9 @@ export function saveConfig(cfg) {
 }
 
 export function clearConfig() {
-  localStorage.removeItem(LS_CONFIG);
+  try {
+    localStorage.removeItem(LS_CONFIG);
+  } catch {}
 }
 
 // Remembered independently of the signed-in session, so the address is
@@ -284,6 +286,7 @@ export class Jellyfin {
     this._socket = null;
     this._socketListeners = new Set();
     this._socketStopped = false;
+    this._sessionExpiredNotified = false;
     this.inSyncPlay = false;
     this.syncPlayQueue = [];
   }
@@ -299,7 +302,26 @@ export class Jellyfin {
   }
 
   _req(path, { method = "GET", body } = {}) {
-    return raw(this.serverUrl, path, { method, body, token: this.token }).then((r) => r.data);
+    return raw(this.serverUrl, path, { method, body, token: this.token })
+      .then((r) => r.data)
+      .catch((error) => {
+        // A 401 is definitive for an already-authenticated client. Notify the
+        // session owner before callers optionally recover or suppress the
+        // request error (playback progress intentionally remains best-effort).
+        // Do not treat every 403 as expiry: restricted users can legitimately
+        // be forbidden from individual actions while their session is valid.
+        if (error instanceof ApiError && error.status === 401) this._handleSessionExpired(error);
+        throw error;
+      });
+  }
+
+  _handleSessionExpired(error = new ApiError("Your session expired — sign in again.", 401)) {
+    if (this._sessionExpiredNotified) return;
+    this._sessionExpiredNotified = true;
+    this._socketStopped = true;
+    this._socket?.close();
+    this._socket = null;
+    this.onSessionExpired?.(error);
   }
 
   _get(path, params) {
@@ -778,8 +800,7 @@ export class Jellyfin {
       return this.me()
         .catch((e) => {
           if (e instanceof ApiError && (e.status === 401 || e.status === 403)) {
-            this._socketStopped = true;
-            this.onSessionExpired?.();
+            this._handleSessionExpired(e);
           }
         })
         .then(() => {
@@ -800,6 +821,10 @@ export class Jellyfin {
     this._socketStopped = true;
     this._socket?.close();
     this._socket = null;
+  }
+
+  logout() {
+    return this._req("/Sessions/Logout", { method: "POST" });
   }
 
   /* ------------------------------ play state ------------------------------ */

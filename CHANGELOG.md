@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — experimental
+## 0.1.0-beta.10 — 2026-09-20
 
 Features and fixes:
 

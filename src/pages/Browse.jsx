@@ -47,12 +47,52 @@ export function Browse() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [params]);
   const [sort, setSort] = useState("recent");
+  const [displayPrefs, setDisplayPrefs] = useState(null);
+  const [preferencesReady, setPreferencesReady] = useState(false);
   const [items, setItems] = useState(undefined);
-  const [start, setStart] = useState(0);
   const [total, setTotal] = useState(null);
   const [error, setError] = useState(null);
   const [tick, setTick] = useState(0);
   const retry = () => setTick((t) => t + 1);
+
+  useEffect(() => {
+    let alive = true;
+    client.displayPreferences()
+      .then((preferences) => {
+        if (!alive) return;
+        setDisplayPrefs(preferences || {});
+        const savedSort = preferences?.CustomPrefs?.JellyflowSort;
+        const savedType = preferences?.CustomPrefs?.JellyflowType;
+        if (SORTS.some((entry) => entry.key === savedSort)) setSort(savedSort);
+        if (!params.get("type") && TYPE_FILTERS.some((entry) => entry.key === savedType)) setTypeState(savedType);
+      })
+      .catch(() => {})
+      .finally(() => alive && setPreferencesReady(true));
+    return () => {
+      alive = false;
+    };
+    // Preferences are per signed-in client/user and only need loading once.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [client]);
+
+  useEffect(() => {
+    if (!preferencesReady) return undefined;
+    const timer = window.setTimeout(() => {
+      const next = {
+        ...(displayPrefs || {}),
+        Id: displayPrefs?.Id || "jellyflow",
+        Client: "Jellyflow",
+        RememberSorting: true,
+        CustomPrefs: {
+          ...(displayPrefs?.CustomPrefs || {}),
+          JellyflowType: type,
+          JellyflowSort: sort,
+        },
+      };
+      client.saveDisplayPreferences(next).catch(() => {});
+    }, 500);
+    return () => window.clearTimeout(timer);
+  }, [client, displayPrefs, preferencesReady, sort, type]);
 
   const setType = (key) => {
     setTypeState(key);
@@ -67,7 +107,6 @@ export function Browse() {
     let alive = true;
     setItems(undefined);
     setError(null);
-    setStart(0);
     (async () => {
       try {
         const out = await client.items({
@@ -96,7 +135,6 @@ export function Browse() {
 
   const loadMore = async () => {
     if (!items || loadingMore) return;
-    setStart(items.length);
     setLoadingMore(true);
     try {
       const out = await client.items({

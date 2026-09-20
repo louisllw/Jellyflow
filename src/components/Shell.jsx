@@ -29,7 +29,13 @@ export function Shell({ children }) {
 
   const type = (v) => {
     setQ(v);
-    if (v) navigate("/search?q=" + encodeURIComponent(v), { replace: onSearch });
+    if (v) {
+      const typeParam = onSearch ? params.get("type") : "";
+      const suffix = typeParam ? `&type=${encodeURIComponent(typeParam)}` : "";
+      navigate("/search?q=" + encodeURIComponent(v) + suffix, { replace: onSearch });
+    } else if (onSearch) {
+      navigate("/search", { replace: true });
+    }
   };
 
   const goBack = () => {
@@ -102,7 +108,7 @@ export function Shell({ children }) {
             <input
               id="jf-search"
               type="search"
-              placeholder="Search films, series, music…"
+              placeholder="Search shows, movies, live TV…"
               value={q}
               onChange={(e) => type(e.target.value)}
               autoComplete="off"

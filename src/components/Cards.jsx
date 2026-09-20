@@ -128,10 +128,11 @@ export function ErrorBox({ error, onRetry }) {
 // item's user-data playback position.
 export function ProgressRing({ pct }) {
   if (!pct || pct <= 0) return null;
+  const complete = pct >= 1;
   return (
-    <span className="card-badge" style={pct > 0.92 ? { color: "var(--ink-faint)" } : undefined}>
+    <span className="card-badge" style={complete ? { color: "var(--ink-faint)" } : undefined}>
       <span className="ring" style={{ "--p": Math.min(0.99, pct) }} />
-      {pct > 0.92 ? "watched" : `${Math.round(pct * 100)}%`}
+      {complete ? "watched" : `${Math.round(pct * 100)}%`}
     </span>
   );
 }
@@ -141,6 +142,6 @@ export function itemProgress(item) {
   const ticks = ud?.PlaybackPositionTicks || 0;
   const total = item?.RunTimeTicks || 0;
   if (!total || ticks <= 0) return 0;
-  if (ud?.Played) return 1;
+  if (ud?.Played && ticks <= 30 * 10_000_000) return 1;
   return Math.min(0.99, ticks / total);
 }

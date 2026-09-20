@@ -4,13 +4,32 @@ import { useSession } from "../state/Session.jsx";
 import { mediaAuthHeader } from "../api/jellyfin.js";
 import { fmtClock, isAudioOnly, isLiveTv, secondsToTicks, ticksToSeconds } from "../api/utils.js";
 import { IconBack, IconSettings, IconInfo } from "./Icons.jsx";
+import { combineHlsMasters } from "./adaptiveManifest.js";
+import { lockDocumentScroll } from "./documentScrollLock.js";
+import {
+  autoHlsConfig,
+  autoStepUpDecision,
+  connectionBandwidthEstimate,
+  levelForBandwidth,
+} from "./adaptivePlayback.js";
+import {
+  episodePlaybackHeading,
+  findSkippableSegment,
+  loadPlaybackSegments,
+  transcodeReasons,
+} from "./playbackMetadata.js";
+import {
+  AUTO_CEILING_KEY,
+  AUTO_QUALITY_OPTIONS,
+  initialAutoQuality,
+  lowerQualityKey,
+  qualityProfile,
+  sourceFitsProfile,
+} from "./playerQuality.js";
 
 const QUALITY_OPTIONS = [
   { key: "auto", label: "Auto" },
-  { key: "1080", label: "1080p · 20 Mbps", maxBitrate: 20_000_000, maxHeight: 1080 },
-  { key: "720", label: "720p · 8 Mbps", maxBitrate: 8_000_000, maxHeight: 720 },
-  { key: "480", label: "480p · 3 Mbps", maxBitrate: 3_000_000, maxHeight: 480 },
-  { key: "360", label: "360p · 1.2 Mbps", maxBitrate: 1_200_000, maxHeight: 360 },
+  ...AUTO_QUALITY_OPTIONS.slice().reverse(),
   { key: "original", label: "Original (direct)" },
 ];
 
@@ -32,6 +51,22 @@ function savePrefs(patch) {
   } catch {}
 }
 
+function trackPreference(track) {
+  if (!track) return "";
+  return `${track.lang || track.language || ""}|${track.name || track.label || ""}`.toLowerCase();
+}
+
+function preferredTrack(list, preference) {
+  if (!preference) return null;
+  const exact = list.find((track) => trackPreference(track) === preference);
+  if (exact) return exact;
+  const [language, name] = preference.split("|");
+  return list.find((track) => {
+    const [trackLanguage, trackName] = trackPreference(track).split("|");
+    return (language && trackLanguage === language) || (!language && name && trackName === name);
+  }) || null;
+}
+
 /**
  * A purpose-built video/audio player.
  *
@@ -45,7 +80,7 @@ function savePrefs(patch) {
  * This is a full-screen overlay, not a route — so closing it returns to the
  * exact page and scroll position you came from.
  */
-export function Player({ item, initialPosition = 0, onClose }) {
+export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext, onClose }) {
   const { client } = useSession();
   const containerRef = useRef(null);
   const videoRef = useRef(null);
@@ -54,6 +89,14 @@ export function Player({ item, initialPosition = 0, onClose }) {
   const statsTimer = useRef(null);
   const idleTimer = useRef(null);
   const playSessionIdRef = useRef(null);
+  const playMethodRef = useRef("Transcode");
+  const liveStreamIdRef = useRef(null);
+  const serverBandwidthRef = useRef(null);
+  const syncQueueAnnouncedRef = useRef(false);
+  const syncReadyRef = useRef(false);
+  const directStallsRef = useRef([]);
+  const wakeLockRef = useRef(null);
+  const cueTimingsRef = useRef(new WeakMap());
   const justExitedFsRef = useRef(false);
   const lastPositionRef = useRef(initialPosition);
   const resumeTargetRef = useRef(initialPosition);
@@ -66,17 +109,23 @@ export function Player({ item, initialPosition = 0, onClose }) {
   const activePointerIdRef = useRef(null);
   const scrubRafRef = useRef(null);
   const pendingScrubFracRef = useRef(null);
+  const completedRef = useRef(false);
   const prefs = useMemo(() => loadPrefs(), []);
+  const episodeHeading = episodePlaybackHeading(item);
 
   const [playing, setPlaying] = useState(false);
   const [current, setCurrent] = useState(0);
   const [duration, setDuration] = useState(0);
+  const [bufferedRanges, setBufferedRanges] = useState([]);
   const [buffering, setBuffering] = useState(true);
   const [muted, setMuted] = useState(Boolean(prefs.muted));
   const [volume, setVolume] = useState(prefs.volume ?? 1);
   const [speed, setSpeed] = useState(prefs.speed ?? 1);
   const [error, setError] = useState(null);
   const [quality, setQuality] = useState(prefs.quality || "auto");
+  const [autoQuality, setAutoQuality] = useState(initialAutoQuality);
+  const [forceAdaptive, setForceAdaptive] = useState(false);
+  const [reloadNonce, setReloadNonce] = useState(0);
   const [showQuality, setShowQuality] = useState(false);
   const [showStats, setShowStats] = useState(false);
   const [showSpeed, setShowSpeed] = useState(false);
@@ -90,6 +139,13 @@ export function Player({ item, initialPosition = 0, onClose }) {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isPiP, setIsPiP] = useState(false);
   const [scrubFrac, setScrubFrac] = useState(null);
+  const [hoverFrac, setHoverFrac] = useState(null);
+  const [nextPromptDismissed, setNextPromptDismissed] = useState(false);
+  const [subtitleSize, setSubtitleSize] = useState(prefs.subtitleSize || "normal");
+  const [subtitleBackground, setSubtitleBackground] = useState(prefs.subtitleBackground || "shadow");
+  const [subtitleDelay, setSubtitleDelay] = useState(prefs.subtitleDelay || 0);
+  const [mediaSegments, setMediaSegments] = useState([]);
+  const [segmentStatus, setSegmentStatus] = useState("Not checked");
 
 
   function isVideo(it) {
@@ -122,12 +178,25 @@ export function Player({ item, initialPosition = 0, onClose }) {
     const v = videoRef.current;
     if (!v) return;
     let cancelled = false;
+    let retryTimer;
+    let sessionStarted = false;
+    let playSessionId = null;
+    let liveStreamId = null;
+    let negotiatedTranscodingUrl = "";
+    let adaptiveManifestUrl = null;
+    let playbackReason = "";
     const untrackFns = [];
 
-    // Re-runs whenever the quality choice changes, too — pick up wherever
-    // playback currently is rather than restarting from zero.
-    const resumeAt = v.currentTime > 1 ? v.currentTime : initialPosition;
-    const opt = QUALITY_OPTIONS.find((q) => q.key === quality);
+    // Re-runs whenever the quality choice changes, too. The previous effect's
+    // cleanup has already detached the old source by the time this runs, which
+    // resets `v.currentTime` to zero. Carry the position across that teardown
+    // in a ref instead of trying to read it back from the emptied element.
+    const resumeAt = Number.isFinite(lastPositionRef.current)
+      ? lastPositionRef.current
+      : initialPosition;
+    const selectedQuality = quality === "auto" ? AUTO_CEILING_KEY : quality;
+    const opt = qualityProfile(selectedQuality);
+    const autoStartProfile = qualityProfile(autoQuality);
     const mediaSourceId = item?.MediaSources?.[0]?.Id;
     lastPositionRef.current = resumeAt;
     resumeTargetRef.current = resumeAt;
@@ -135,7 +204,7 @@ export function Player({ item, initialPosition = 0, onClose }) {
     v.volume = volume;
     v.muted = muted;
     v.playbackRate = speed;
-    userPausedRef.current = false;
+    setError(null);
     setBuffering(true);
     setAudioTracks([]);
     setSubtitleTracks([]);
@@ -167,7 +236,7 @@ export function Player({ item, initialPosition = 0, onClose }) {
     const resumeAndPlay = () => {
       applyResumePosition();
       v.playbackRate = speed;
-      v.play().catch(() => {});
+      if (!userPausedRef.current) v.play().catch(() => {});
     };
     v.addEventListener("loadedmetadata", applyResumePosition);
     v.addEventListener("canplay", confirmResumePosition);
@@ -197,6 +266,7 @@ export function Player({ item, initialPosition = 0, onClose }) {
     const wireNativeAudioTracks = () => {
       const at = v.audioTracks;
       if (!at) return undefined;
+      let preferenceApplied = false;
       const sync = () => {
         const list = Array.from(at).map((t, i) => ({
           id: t.id || String(i),
@@ -204,8 +274,17 @@ export function Player({ item, initialPosition = 0, onClose }) {
           lang: t.language,
         }));
         setAudioTracks(list);
-        const active = Array.from(at).find((t) => t.enabled);
-        setAudioTrack(active ? active.id : -1);
+        if (!preferenceApplied) {
+          const wanted = preferredTrack(list, loadPrefs().audioTrackPreference);
+          if (wanted) {
+            Array.from(at).forEach((track, index) => {
+              track.enabled = (track.id || String(index)) === wanted.id;
+            });
+          }
+          preferenceApplied = true;
+        }
+        const activeIndex = Array.from(at).findIndex((t) => t.enabled);
+        setAudioTrack(activeIndex >= 0 ? list[activeIndex].id : -1);
       };
       at.addEventListener("addtrack", sync);
       at.addEventListener("removetrack", sync);
@@ -224,6 +303,7 @@ export function Player({ item, initialPosition = 0, onClose }) {
     const wireNativeSubtitleTracks = () => {
       const tt = v.textTracks;
       if (!tt) return undefined;
+      let preferenceApplied = false;
       const sync = () => {
         const list = Array.from(tt).map((t, i) => ({
           id: i,
@@ -231,6 +311,16 @@ export function Player({ item, initialPosition = 0, onClose }) {
           lang: t.language,
         }));
         setSubtitleTracks(list);
+        if (!preferenceApplied) {
+          const preference = loadPrefs().subtitleTrackPreference;
+          const wanted = preferredTrack(list, preference);
+          if (preference) {
+            Array.from(tt).forEach((track, index) => {
+              track.mode = preference !== "off" && wanted?.id === index ? "showing" : "hidden";
+            });
+          }
+          preferenceApplied = true;
+        }
         setSubtitleTrack(Array.from(tt).findIndex((t) => t.mode === "showing"));
       };
       tt.addEventListener("addtrack", sync);
@@ -246,10 +336,24 @@ export function Player({ item, initialPosition = 0, onClose }) {
 
     (async () => {
       let mode = fallbackMode();
-      let playSessionId = null;
-      // Ask Jellyfin whether this browser can play the source as-is before
-      // paying for a transcode — most files don't need one, and this is
-      // what stops every video defaulting to a re-encoded H264/AAC stream.
+      let measuredBandwidth = serverBandwidthRef.current;
+      if (quality === "auto" && !measuredBandwidth) {
+        try {
+          measuredBandwidth = await client.measureBitrate();
+          serverBandwidthRef.current = measuredBandwidth;
+        } catch {
+          // Fragment timings and the browser connection estimate still provide
+          // a safe fallback when an older server lacks BitrateTest.
+        }
+        if (cancelled) return;
+      }
+      const measuredStartProfile = qualityProfile(
+        measuredBandwidth ? initialAutoQuality(measuredBandwidth / 1_000_000) : autoQuality,
+      ) || autoStartProfile;
+      // Ask Jellyfin whether this browser can play the source as-is. Fixed
+      // qualities avoid a needless transcode when the source already fits;
+      // Auto does the same when measured headroom is generous, and falls back
+      // to adaptive HLS if the direct stream proves unstable.
       if (mode === "hls" || mode === "native-hls") {
         const info = await client.getPlaybackInfo(item, {
           mediaSourceId,
@@ -258,9 +362,47 @@ export function Player({ item, initialPosition = 0, onClose }) {
         });
         if (cancelled) return;
         playSessionId = info.playSessionId;
-        if (info.source?.SupportsDirectPlay) mode = "direct";
+        liveStreamId = info.liveStreamId;
+        negotiatedTranscodingUrl = info.transcodingUrl || "";
+        liveStreamIdRef.current = liveStreamId;
+        // Original remains the explicit no-transcode choice. Fixed qualities
+        // may direct-play when the source fits their limit; Auto only does so
+        // with ample headroom and can promote itself to adaptive HLS on stalls.
+        const playbackSource = info.source || item?.MediaSources?.[0];
+        const sourceBitrate = playbackSource?.Bitrate || 0;
+        const autoDirectPlayFits =
+          quality === "auto" &&
+          !forceAdaptive &&
+          sourceBitrate > 0 &&
+          sourceFitsProfile(playbackSource, measuredStartProfile) &&
+          sourceBitrate <= (measuredStartProfile?.maxBitrate || 0) * 0.7;
+        const fixedDirectPlayFits = quality !== "auto" && sourceFitsProfile(playbackSource, opt);
+        if (info.source?.SupportsDirectPlay && (autoDirectPlayFits || fixedDirectPlayFits)) mode = "direct";
+        const reasons = transcodeReasons(playbackSource);
+        playbackReason = mode === "direct"
+          ? "Compatible source"
+          : reasons.join(", ") || (info.source?.SupportsDirectPlay ? "Selected quality limit" : "Browser compatibility");
       }
       playSessionIdRef.current = playSessionId;
+
+      const playMethod = mode === "direct" ? "DirectPlay" : "Transcode";
+      playMethodRef.current = playMethod;
+      client.startPlayback(item, {
+        mediaSourceId,
+        playMethod,
+        playSessionId,
+        positionTicks: secondsToTicks(resumeAt),
+        LiveStreamId: liveStreamId,
+        CanSeek: !isLiveTv(item),
+        IsPaused: false,
+        IsMuted: v.muted,
+        VolumeLevel: Math.round(v.volume * 100),
+      });
+      if (client.inSyncPlay && !syncQueueAnnouncedRef.current) {
+        syncQueueAnnouncedRef.current = true;
+        client.syncPlaySetQueue([item.Id], secondsToTicks(resumeAt)).catch(() => {});
+      }
+      sessionStarted = true;
 
       if (mode === "direct") {
         setSubtitleTracks(directSubtitleTracks());
@@ -274,43 +416,184 @@ export function Player({ item, initialPosition = 0, onClose }) {
       }
 
       if (mode === "hls") {
-        const url = client.streamUrl(item, {
-          maxBitrate: opt?.maxBitrate,
-          maxHeight: opt?.maxHeight,
-          playSessionId,
-        });
-        setStats((s) => ({ ...(s || {}), playMethod: "Transcode (HLS)" }));
+        let url = isLiveTv(item) && negotiatedTranscodingUrl
+          ? client.mediaUrl(negotiatedTranscodingUrl)
+          : client.streamUrl(item, {
+              maxBitrate: opt?.maxBitrate,
+              maxHeight: opt?.maxHeight,
+              playSessionId,
+              adaptive: quality === "auto",
+            });
+        if (quality === "auto" && !isLiveTv(item)) {
+          try {
+            const profiles = AUTO_QUALITY_OPTIONS.filter((profile) => profile.maxHeight <= opt.maxHeight);
+            const masters = await Promise.all(
+              profiles.map(async (profile) => {
+                const masterUrl = client.streamUrl(item, {
+                  maxBitrate: profile.maxBitrate,
+                  maxHeight: profile.maxHeight,
+                  playSessionId,
+                  adaptive: true,
+                });
+                const response = await fetch(masterUrl, {
+                  headers: { Authorization: mediaAuthHeader(client.token) },
+                });
+                if (!response.ok) throw new Error(`Adaptive manifest request failed (${response.status}).`);
+                return { url: masterUrl, text: await response.text() };
+              }),
+            );
+            if (cancelled) return;
+            const combined = combineHlsMasters(masters);
+            adaptiveManifestUrl = URL.createObjectURL(
+              new Blob([combined], { type: "application/vnd.apple.mpegurl" }),
+            );
+            url = adaptiveManifestUrl;
+          } catch {
+            // A restrictive proxy may reject the preparatory manifest reads.
+            // The ordinary Jellyfin adaptive master is still a safe fallback.
+          }
+        }
+        setStats((s) => ({
+          ...(s || {}),
+          playMethod: "Transcode (HLS)",
+          autoProfile: quality === "auto" ? opt : null,
+          playbackReason,
+          level: null,
+          bandwidthEstimate: null,
+          autoDecision: quality === "auto" ? "Measuring connection…" : null,
+        }));
         const hls = new Hls({
           enableWorker: true,
           lowLatencyMode: false,
+          startLevel: -1,
+          // Seed HLS's estimator from the conservative connection profile
+          // chosen at startup. After the first fragments it continuously
+          // measures real throughput and switches variants inside this same
+          // MediaSource, without replacing the video or discarding its buffer.
+          ...(quality === "auto"
+            ? autoHlsConfig(
+                measuredBandwidth || connectionBandwidthEstimate(navigator.connection) ||
+                  Math.floor((autoStartProfile?.maxBitrate || 0) * 0.7),
+              )
+            : {}),
           // Some servers reject the query-string api_key on HLS requests and
           // require the full Authorization header instead — hls.js can't rely
           // on <video src> query params, so we set it on every XHR it makes.
-          xhrSetup: (xhr) => xhr.setRequestHeader("Authorization", mediaAuthHeader(client.token)),
+          xhrSetup: (xhr, requestUrl) => {
+            if (/^https?:/i.test(requestUrl)) xhr.setRequestHeader("Authorization", mediaAuthHeader(client.token));
+          },
         });
         hlsRef.current = hls;
         hls.loadSource(url);
         hls.attachMedia(v);
-        hls.on(Hls.Events.MANIFEST_PARSED, resumeAndPlay);
+        const applyBandwidthEstimate = (estimate) => {
+          if (quality !== "auto") return;
+          if (!estimate) return;
+          hls.bandwidthEstimate = estimate;
+          if (hls.levels?.length) hls.nextAutoLevel = levelForBandwidth(hls.levels, estimate);
+          setStats((s) => ({ ...(s || {}), bandwidthEstimate: estimate }));
+        };
+        const retuneFromConnection = () => applyBandwidthEstimate(connectionBandwidthEstimate(navigator.connection));
+        hls.on(Hls.Events.MANIFEST_PARSED, () => {
+          setStats((s) => ({ ...(s || {}), availableLevels: hls.levels?.length || 0 }));
+          applyBandwidthEstimate(measuredBandwidth || connectionBandwidthEstimate(navigator.connection));
+          resumeAndPlay();
+        });
         hls.on(Hls.Events.LEVEL_SWITCHED, (_e, data) => {
           const level = hls.levels?.[data.level];
-          setStats((s) => ({ ...(s || {}), level, playMethod: "Transcode (HLS)" }));
+          setStats((s) => ({
+            ...(s || {}),
+            level,
+            bandwidthEstimate: hls.bandwidthEstimate,
+            playMethod: "Transcode (HLS)",
+            autoDecision: quality === "auto" && level?.height ? `Playing ${level.height}p` : s?.autoDecision,
+          }));
         });
+
         // Jellyfin's HLS master playlist carries every text subtitle and every
         // audio stream as alternate renditions — hls.js can swap between them
         // instantly, with no restart, exactly like the quality-independent
         // track menus in a native player.
         hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, () => {
-          setAudioTracks(hls.audioTracks || []);
-          setAudioTrack(hls.audioTrack);
+          const tracks = hls.audioTracks || [];
+          setAudioTracks(tracks);
+          const wanted = preferredTrack(tracks, loadPrefs().audioTrackPreference);
+          if (wanted) hls.audioTrack = wanted.id;
+          setAudioTrack(wanted?.id ?? hls.audioTrack);
         });
         hls.on(Hls.Events.AUDIO_TRACK_SWITCHED, (_e, data) => setAudioTrack(data.id));
         hls.on(Hls.Events.SUBTITLE_TRACKS_UPDATED, () => {
-          setSubtitleTracks(hls.subtitleTracks || []);
-          setSubtitleTrack(hls.subtitleTrack);
+          const tracks = hls.subtitleTracks || [];
+          setSubtitleTracks(tracks);
+          const preference = loadPrefs().subtitleTrackPreference;
+          const wanted = preferredTrack(tracks, preference);
+          if (preference === "off") hls.subtitleTrack = -1;
+          else if (wanted) hls.subtitleTrack = wanted.id;
+          setSubtitleTrack(preference === "off" ? -1 : (wanted?.id ?? hls.subtitleTrack));
         });
         hls.on(Hls.Events.SUBTITLE_TRACK_SWITCH, (_e, data) => setSubtitleTrack(data.id));
+        const connection = navigator.connection;
+        const resumeAfterNetworkReturn = () => {
+          retuneFromConnection();
+          hls.startLoad(-1);
+          if (!userPausedRef.current) v.play().catch(() => {});
+        };
+        const pauseLoadsWhileOffline = () => hls.stopLoad();
+        connection?.addEventListener?.("change", retuneFromConnection);
+        window.addEventListener("online", resumeAfterNetworkReturn);
+        window.addEventListener("offline", pauseLoadsWhileOffline);
+        untrackFns.push(() => connection?.removeEventListener?.("change", retuneFromConnection));
+        untrackFns.push(() => window.removeEventListener("online", resumeAfterNetworkReturn));
+        untrackFns.push(() => window.removeEventListener("offline", pauseLoadsWhileOffline));
         let networkRetries = 0;
+        let strongAutoSamples = 0;
+        let lastAutoPromotionAt = 0;
+        hls.on(Hls.Events.FRAG_LOADED, (_e, data) => {
+          networkRetries = 0;
+          if (quality !== "auto" || !data?.stats || !hls.levels?.length) return;
+
+          const loadTimeMs = data.stats.loading?.end - data.stats.loading?.start;
+          const fragmentBandwidth = loadTimeMs > 0 && data.stats.loaded > 0
+            ? (data.stats.loaded * 8_000) / loadTimeMs
+            : 0;
+          const bufferedEnd = v.buffered.length ? v.buffered.end(v.buffered.length - 1) : 0;
+          const currentLevel = Number.isInteger(data.frag?.level) ? data.frag.level : hls.currentLevel;
+          const decision = autoStepUpDecision({
+            levels: hls.levels,
+            currentLevel,
+            fragmentBandwidth,
+            bufferedAhead: Math.max(0, bufferedEnd - v.currentTime),
+            strongSamples: strongAutoSamples,
+          });
+          strongAutoSamples = decision.strongSamples;
+
+          if (decision.level > currentLevel && Date.now() - lastAutoPromotionAt >= 6_000) {
+            const next = hls.levels[decision.level];
+            const nextBitrate = next?.maxBitrate || next?.bitrate || 0;
+            // Two fast fragment loads plus a healthy buffer are enough to
+            // escape a stale low EWMA. Raise the estimate only as far as the
+            // measured sample safely supports, then let hls.js verify the rung.
+            hls.bandwidthEstimate = Math.max(
+              hls.bandwidthEstimate || 0,
+              Math.min(fragmentBandwidth * 0.85, nextBitrate * 1.5),
+            );
+            hls.nextAutoLevel = decision.level;
+            lastAutoPromotionAt = Date.now();
+            setStats((s) => ({
+              ...(s || {}),
+              bandwidthEstimate: hls.bandwidthEstimate,
+              autoDecision: `Testing ${next?.height ? `${next.height}p` : "next quality"}`,
+            }));
+          } else {
+            setStats((s) => ({
+              ...(s || {}),
+              bandwidthEstimate: hls.bandwidthEstimate,
+              autoDecision: strongAutoSamples
+                ? "Confirming faster connection…"
+                : s?.autoDecision,
+            }));
+          }
+        });
         hls.on(Hls.Events.ERROR, (_e, data) => {
           if (data.fatal) {
             if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
@@ -320,13 +603,16 @@ export function Player({ item, initialPosition = 0, onClose }) {
               if (networkRetries > 6) {
                 hls.destroy();
                 setError(
-                  isLiveTv(item)
+                  !navigator.onLine
+                    ? "You appear to be offline. Playback will retry when the connection returns."
+                    : isLiveTv(item)
                     ? "This channel's stream keeps failing to load — your Jellyfin server (or its reverse proxy) may be missing CORS headers on live TV responses. Check its network/CORS configuration."
                     : "This stream keeps failing to load — check that the server is reachable and try again.",
                 );
                 return;
               }
-              hls.startLoad();
+              clearTimeout(retryTimer);
+              retryTimer = setTimeout(() => hls.startLoad(), Math.min(8_000, 500 * 2 ** networkRetries));
             } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();
             else {
               setError("This stream stopped part-way. It may still be processing — try again in a moment.");
@@ -335,32 +621,53 @@ export function Player({ item, initialPosition = 0, onClose }) {
           }
         });
       } else if (mode === "native-hls") {
-        const url = client.streamUrl(item, {
-          maxBitrate: opt?.maxBitrate,
-          maxHeight: opt?.maxHeight,
-          playSessionId,
-        });
+        const url = isLiveTv(item) && negotiatedTranscodingUrl
+          ? client.mediaUrl(negotiatedTranscodingUrl)
+          : client.streamUrl(item, {
+              maxBitrate: opt?.maxBitrate,
+              maxHeight: opt?.maxHeight,
+              playSessionId,
+              adaptive: quality === "auto",
+            });
         v.src = url;
         v.load();
         v.onloadedmetadata = resumeAndPlay;
-        setStats((s) => ({ ...(s || {}), playMethod: "HLS (native)" }));
+        setStats((s) => ({
+          ...(s || {}),
+          playMethod: "HLS (native)",
+          playbackReason,
+          level: null,
+          bandwidthEstimate: null,
+        }));
       } else {
         // Direct / progressive / audio — the server hands back a playable file.
         const url = client.directUrl(item, { audio: isAudioOnly(item), mediaSourceId });
         v.src = url;
         v.load();
         v.onloadedmetadata = resumeAndPlay;
-        setStats((s) => ({ ...(s || {}), playMethod: "Direct play" }));
+        setStats((s) => ({
+          ...(s || {}),
+          playMethod: "Direct play",
+          playbackReason: playbackReason || "Compatible source",
+          level: null,
+          bandwidthEstimate: null,
+        }));
       }
     })();
 
     return () => {
       cancelled = true;
+      // Snapshot the outgoing stream before removeAttribute/load resets its
+      // timeline. The next quality effect uses this value as its resume point.
+      const outgoingPosition = reportablePosition(v);
+      if (Number.isFinite(outgoingPosition)) lastPositionRef.current = outgoingPosition;
       if (hlsRef.current) {
         hlsRef.current.destroy();
         hlsRef.current = null;
       }
+      if (adaptiveManifestUrl) URL.revokeObjectURL(adaptiveManifestUrl);
       untrackFns.forEach((fn) => fn());
+      clearTimeout(retryTimer);
       clearTimeout(reportTimer.current);
       v.removeEventListener("loadedmetadata", applyResumePosition);
       v.removeEventListener("canplay", confirmResumePosition);
@@ -368,9 +675,51 @@ export function Player({ item, initialPosition = 0, onClose }) {
       v.onloadedmetadata = null;
       v.removeAttribute("src");
       v.load();
+      if (sessionStarted) {
+        const position = lastPositionRef.current;
+        client.stopPlayback(item.Id, {
+          positionTicks: position > 15 ? secondsToTicks(position) : undefined,
+          mediaSourceId,
+          playSessionId,
+          LiveStreamId: liveStreamId,
+          IsPaused: v.paused,
+        });
+      }
+      if (liveStreamId) client.closeLiveStream(liveStreamId);
+      if (liveStreamIdRef.current === liveStreamId) liveStreamIdRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [quality]);
+  }, [quality, autoQuality, forceAdaptive, reloadNonce]);
+
+  useEffect(() => {
+    if (!item?.Id || isLiveTv(item)) {
+      setMediaSegments([]);
+      setSegmentStatus("Not available");
+      return undefined;
+    }
+    let alive = true;
+    setSegmentStatus("Checking…");
+    loadPlaybackSegments(client, item)
+      .then((segments) => {
+        if (!alive) return;
+        setMediaSegments(segments);
+        setSegmentStatus(
+          segments.length
+            ? `${segments.length} from Jellyfin`
+            : item.Chapters?.length
+              ? `${item.Chapters.length} chapter markers`
+              : "None supplied",
+        );
+      })
+      .catch(() => {
+        if (!alive) return;
+        setMediaSegments([]);
+        setSegmentStatus(item.Chapters?.length ? `${item.Chapters.length} chapter markers` : "Segment API failed");
+      });
+    return () => {
+      alive = false;
+    };
+  }, [client, item]);
 
   // While the stats panel is open, sample the <video> element's own playback
   // quality counters (dropped frames, decoded resolution) a few times a second.
@@ -528,8 +877,6 @@ export function Player({ item, initialPosition = 0, onClose }) {
     clearTimeout(idleTimer.current);
     idleTimer.current = setTimeout(() => {
       setUiVisible(false);
-      setShowQuality(false);
-      setShowStats(false);
       setShowSpeed(false);
       setShowTracks(false);
     }, 3000);
@@ -545,6 +892,21 @@ export function Player({ item, initialPosition = 0, onClose }) {
     return () => clearTimeout(idleTimer.current);
   }, [playing, wake]);
 
+  // Stats and quality are reference panels rather than momentary controls.
+  // Keep either one open across the player's normal idle timeout, then close
+  // it only when the viewer clicks/taps outside that specific panel.
+  useEffect(() => {
+    if (!showStats && !showQuality) return undefined;
+    const openPanel = showStats ? "stats" : "quality";
+    const closeOnOutsidePress = (event) => {
+      if (event.target instanceof Element && event.target.closest(`[data-persistent-popover="${openPanel}"]`)) return;
+      setShowStats(false);
+      setShowQuality(false);
+    };
+    document.addEventListener("pointerdown", closeOnOutsidePress);
+    return () => document.removeEventListener("pointerdown", closeOnOutsidePress);
+  }, [showQuality, showStats]);
+
   /* --------------------------- report progress ----------------------------- */
 
   const report = useCallback(
@@ -556,36 +918,38 @@ export function Player({ item, initialPosition = 0, onClose }) {
         positionTicks: ticks,
         mediaSourceId: ms,
         playSessionId: playSessionIdRef.current,
+        LiveStreamId: liveStreamIdRef.current,
+        CanSeek: !isLiveTv(item),
+        IsPaused: videoRef.current?.paused ?? false,
+        IsMuted: videoRef.current?.muted ?? false,
+        VolumeLevel: Math.round((videoRef.current?.volume ?? 1) * 100),
+        PlayMethod: playMethodRef.current,
+        AudioStreamIndex: Number.isInteger(audioTrack) ? audioTrack : undefined,
+        SubtitleStreamIndex: Number.isInteger(subtitleTrack) ? subtitleTrack : undefined,
       });
     },
-    [client, item],
+    [audioTrack, client, item, subtitleTrack],
   );
 
-  // Close out the Jellyfin session on the way out — this is what releases
-  // an active transcode job server-side instead of leaving it to time out —
-  // then mark played / report the final position.
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      if (playSessionIdRef.current) client.pingPlayback(playSessionIdRef.current);
+    }, 20_000);
+    return () => window.clearInterval(timer);
+  }, [client]);
+
+  // The source-loading effect owns start/stop for each individual play session
+  // (including quality switches). This item-level cleanup only applies the
+  // final watched/resume state.
   useEffect(() => {
     return () => {
       const v = videoRef.current;
       if (!v || !item) return;
       const ms = item.MediaSources?.[0]?.Id;
-      const d = v.duration;
       const finalPosition = Math.max(lastPositionRef.current || 0, v.currentTime || 0);
-      const nearlyDone = d > 0 && finalPosition / d > 0.9;
       const watchedEnough = finalPosition > 15;
-      client.stopPlayback(item.Id, {
-        // Reporting a position here is what updates the saved resume point
-        // server-side — only do that once the position is meaningful.
-        // Unconditionally reporting wherever playback happened to be (e.g.
-        // a few seconds in, from closing right after opening to test
-        // something) would silently overwrite a real, further-along resume
-        // position with that. Session cleanup itself still always runs.
-        positionTicks: watchedEnough || nearlyDone ? secondsToTicks(finalPosition) : undefined,
-        mediaSourceId: ms,
-        playSessionId: playSessionIdRef.current,
-      });
       if (isLiveTv(item)) return;
-      if (nearlyDone) {
+      if (completedRef.current) {
         client.markPlayed(item.Id, { mediaSourceId: ms });
       } else if (watchedEnough) {
         report(finalPosition);
@@ -607,6 +971,14 @@ export function Player({ item, initialPosition = 0, onClose }) {
       resumeTargetRef.current = 0;
     }
     setDuration(v.duration || 0);
+    if (v.duration > 0) {
+      setBufferedRanges(
+        Array.from({ length: v.buffered.length }, (_, index) => ({
+          left: (v.buffered.start(index) / v.duration) * 100,
+          width: ((v.buffered.end(index) - v.buffered.start(index)) / v.duration) * 100,
+        })),
+      );
+    }
     if (!reportTimer.current) {
       reportTimer.current = setTimeout(() => {
         reportTimer.current = null;
@@ -615,32 +987,102 @@ export function Player({ item, initialPosition = 0, onClose }) {
     }
   };
 
+  const onVideoWaiting = () => {
+    setBuffering(true);
+    const v = videoRef.current;
+    if (quality === "auto" && stats?.playMethod === "Transcode (HLS)" && hlsRef.current && v?.currentTime > 0) {
+      const hls = hlsRef.current;
+      const lowest = hls.minAutoLevel;
+      const lowestBitrate = hls.levels?.[lowest]?.maxBitrate || hls.levels?.[lowest]?.bitrate || 500_000;
+      hls.stopLoad();
+      hls.bandwidthEstimate = Math.min(hls.bandwidthEstimate || Infinity, lowestBitrate * 1.15);
+      hls.nextAutoLevel = lowest;
+      hls.startLoad(-1);
+      return;
+    }
+    if (quality !== "auto" || forceAdaptive || stats?.playMethod !== "Direct play" || !v || v.currentTime < 5) return;
+    const now = Date.now();
+    directStallsRef.current = [...directStallsRef.current.filter((time) => now - time < 60_000), now];
+    if (directStallsRef.current.length >= 2) {
+      directStallsRef.current = [];
+      setForceAdaptive(true);
+    }
+  };
+
+  const onVideoPlaying = () => {
+    setBuffering(false);
+    if (client.inSyncPlay && !syncReadyRef.current) {
+      syncReadyRef.current = true;
+      const video = videoRef.current;
+      client.syncPlayReady(secondsToTicks(video?.currentTime || 0), !video?.paused).catch(() => {
+        syncReadyRef.current = false;
+      });
+    }
+  };
+
+  const retryPlayback = useCallback(() => {
+    setError(null);
+    setReloadNonce((value) => value + 1);
+  }, []);
+
+  const retryAtLowerQuality = useCallback(() => {
+    setError(null);
+    setForceAdaptive(true);
+    if (quality === "auto") {
+      const lower = lowerQualityKey(autoQuality);
+      if (lower === autoQuality) setReloadNonce((value) => value + 1);
+      else setAutoQuality(lower);
+      return;
+    }
+    const current = quality === "original" ? "1080" : quality;
+    const lower = lowerQualityKey(current);
+    if (lower === quality) setReloadNonce((value) => value + 1);
+    else {
+      setQuality(lower);
+      savePrefs({ quality: lower });
+    }
+  }, [autoQuality, quality]);
+
+  useEffect(() => {
+    const onOnline = () => {
+      if (error) retryPlayback();
+    };
+    window.addEventListener("online", onOnline);
+    return () => window.removeEventListener("online", onOnline);
+  }, [error, retryPlayback]);
+
   const toggle = useCallback(() => {
     const v = videoRef.current;
     if (!v) return;
     if (v.paused) {
       userPausedRef.current = false;
+      if (client.inSyncPlay) {
+        client.syncPlayUnpause().catch(() => {});
+        return;
+      }
       v.play().catch(() => {});
       setPlaying(true);
     } else {
       userPausedRef.current = true;
+      if (client.inSyncPlay) client.syncPlayPause().catch(() => {});
       v.pause();
       setPlaying(false);
       report(reportablePosition(v));
     }
-  }, [report]);
+  }, [client, report]);
 
   const skip = useCallback(
     (delta) => {
       const v = videoRef.current;
       if (!v) return;
       v.currentTime = Math.max(0, Math.min(v.duration || 0, v.currentTime + delta));
+      if (client.inSyncPlay) client.syncPlaySeek(secondsToTicks(v.currentTime)).catch(() => {});
       resumeTargetRef.current = 0;
       lastPositionRef.current = v.currentTime;
       setCurrent(v.currentTime);
       report(v.currentTime);
     },
-    [report],
+    [client, report],
   );
 
   const seekTo = useCallback(
@@ -648,12 +1090,13 @@ export function Player({ item, initialPosition = 0, onClose }) {
       const v = videoRef.current;
       if (!v || !v.duration) return;
       v.currentTime = frac * v.duration;
+      if (client.inSyncPlay) client.syncPlaySeek(secondsToTicks(v.currentTime)).catch(() => {});
       resumeTargetRef.current = 0;
       lastPositionRef.current = v.currentTime;
       setCurrent(v.currentTime);
       report(v.currentTime);
     },
-    [report],
+    [client, report],
   );
 
   // Pointer Events (not onClick) so this also works as a real drag on touch:
@@ -692,6 +1135,10 @@ export function Player({ item, initialPosition = 0, onClose }) {
 
   const onTrackPointerMove = useCallback(
     (e) => {
+      if (activePointerIdRef.current === null) {
+        if (e.pointerType !== "touch") setHoverFrac(fracFromEvent(e));
+        return;
+      }
       if (activePointerIdRef.current !== e.pointerId) return; // a second pointer on the track shouldn't hijack the drag
       scheduleScrubUpdate(fracFromEvent(e));
       wake();
@@ -749,7 +1196,8 @@ export function Player({ item, initialPosition = 0, onClose }) {
       if (at) for (let i = 0; i < at.length; i++) at[i].enabled = at[i].id === id;
     }
     setAudioTrack(id);
-  }, []);
+    savePrefs({ audioTrackPreference: trackPreference(audioTracks.find((track) => track.id === id)) });
+  }, [audioTracks]);
 
   const selectSubtitleTrack = useCallback((id) => {
     if (hlsRef.current) {
@@ -759,14 +1207,149 @@ export function Player({ item, initialPosition = 0, onClose }) {
       if (tt) for (let i = 0; i < tt.length; i++) tt[i].mode = i === id ? "showing" : "hidden";
     }
     setSubtitleTrack(id);
+    savePrefs({
+      subtitleTrackPreference:
+        id === -1 ? "off" : trackPreference(subtitleTracks.find((track) => track.id === id)),
+    });
+  }, [subtitleTracks]);
+
+  const restoreDirectSubtitlePreference = useCallback(() => {
+    const tracks = videoRef.current?.textTracks;
+    if (!tracks) return;
+    const preference = loadPrefs().subtitleTrackPreference;
+    const wanted = preferredTrack(subtitleTracks, preference);
+    if (preference) {
+      for (let index = 0; index < tracks.length; index++) {
+        tracks[index].mode = preference !== "off" && wanted?.id === index ? "showing" : "hidden";
+      }
+    }
+    const active = Array.from(tracks).findIndex((track) => track.mode === "showing");
+    setSubtitleTrack(preference === "off" ? -1 : (wanted?.id ?? active));
+  }, [subtitleTracks]);
+
+  const changeSubtitleStyle = useCallback((patch) => {
+    if (patch.subtitleSize) setSubtitleSize(patch.subtitleSize);
+    if (patch.subtitleBackground) setSubtitleBackground(patch.subtitleBackground);
+    savePrefs(patch);
   }, []);
+
+  const changeSubtitleDelay = useCallback((delta) => {
+    setSubtitleDelay((currentDelay) => {
+      const nextDelay = Math.max(-5, Math.min(5, Math.round((currentDelay + delta) * 2) / 2));
+      savePrefs({ subtitleDelay: nextDelay });
+      return nextDelay;
+    });
+  }, []);
+
+  useEffect(() => {
+    if (subtitleTrack === -1) return undefined;
+    const applyDelay = () => {
+      const tracks = videoRef.current?.textTracks;
+      if (!tracks) return;
+      for (const track of Array.from(tracks)) {
+        for (const cue of Array.from(track.cues || [])) {
+          let original = cueTimingsRef.current.get(cue);
+          if (!original) {
+            original = { startTime: cue.startTime, endTime: cue.endTime };
+            cueTimingsRef.current.set(cue, original);
+          }
+          try {
+            cue.startTime = Math.max(0, original.startTime + subtitleDelay);
+            cue.endTime = Math.max(cue.startTime, original.endTime + subtitleDelay);
+          } catch {}
+        }
+      }
+    };
+    applyDelay();
+    const timer = setInterval(applyDelay, 500);
+    return () => clearInterval(timer);
+  }, [subtitleDelay, subtitleTrack]);
+
+  useEffect(() => {
+    const timers = new Set();
+    const applyPlaystate = (data = {}) => {
+      const video = videoRef.current;
+      if (!video) return;
+      const command = data.Command;
+      const rawPositionTicks = data.SeekPositionTicks ?? data.PositionTicks;
+      const positionTicks = rawPositionTicks == null ? null : Number(rawPositionTicks);
+      if (Number.isFinite(positionTicks)) {
+        const position = ticksToSeconds(positionTicks);
+        if (Math.abs(video.currentTime - position) > 0.75) video.currentTime = position;
+      }
+      if (command === "Pause") video.pause();
+      else if (command === "Unpause" || command === "Play") video.play().catch(() => {});
+      else if (command === "Stop") onClose();
+      else if ((command === "NextTrack" || command === "PlayNext") && nextItem && onPlayNext) onPlayNext();
+    };
+    const unsubscribe = client.onSocketMessage((message) => {
+      if (message?.MessageType === "Playstate") {
+        applyPlaystate(message.Data);
+        return;
+      }
+      if (message?.MessageType === "GeneralCommand") {
+        const command = message.Data || {};
+        const args = command.Arguments || {};
+        if (command.Name === "SetVolume") changeVolume(Number(args.Volume) / 100);
+        else if (command.Name === "Mute") changeVolume(0);
+        else if (command.Name === "Unmute" || command.Name === "ToggleMute") changeVolume(muted ? volume || 1 : 0);
+        else if (command.Name === "SetAudioStreamIndex") selectAudioTrack(Number(args.Index));
+        else if (command.Name === "SetSubtitleStreamIndex") selectSubtitleTrack(Number(args.Index));
+        return;
+      }
+      if (message?.MessageType !== "SyncPlayCommand") return;
+      const command = message.Data;
+      if (!command) return;
+      const when = Date.parse(command.When);
+      const delay = Number.isFinite(when) ? Math.max(0, when - Date.now()) : 0;
+      const timer = window.setTimeout(() => {
+        timers.delete(timer);
+        const hasPosition = command.PositionTicks != null;
+        const elapsedTicks = hasPosition && ["Play", "Unpause"].includes(command.Command) && Number.isFinite(when)
+          ? Math.max(0, Date.now() - when) * 10_000
+          : 0;
+        applyPlaystate({
+          ...command,
+          PositionTicks: hasPosition ? Number(command.PositionTicks) + elapsedTicks : undefined,
+        });
+      }, delay);
+      timers.add(timer);
+    });
+    return () => {
+      unsubscribe();
+      timers.forEach((timer) => window.clearTimeout(timer));
+    };
+  }, [changeVolume, client, muted, nextItem, onClose, onPlayNext, selectAudioTrack, selectSubtitleTrack, volume]);
 
   // Keyboard: space toggles, arrows skip, m mutes, f fullscreen, p PiP, Esc closes.
   useEffect(() => {
     const onKey = (e) => {
+      const interactive = e.target instanceof Element && e.target.closest("button, input, select, [role='menuitemradio']");
       if (e.key === "Escape") {
-        if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+        if (showQuality || showStats || showSpeed || showTracks) {
+          setShowQuality(false);
+          setShowStats(false);
+          setShowSpeed(false);
+          setShowTracks(false);
+        } else if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
         else if (!justExitedFsRef.current) onClose();
+      } else if (e.key === "Tab") {
+        const focusable = Array.from(
+          containerRef.current?.querySelectorAll("button:not(:disabled), input:not(:disabled), [tabindex]:not([tabindex='-1'])") || [],
+        ).filter((element) => element.getClientRects().length > 0);
+        if (!focusable.length) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
+        }
+        return;
+      } else if (interactive) {
+        return;
       } else if (e.key === " " || e.key === "k") {
         e.preventDefault();
         toggle();
@@ -818,16 +1401,111 @@ export function Player({ item, initialPosition = 0, onClose }) {
     subtitleTracks,
     subtitleTrack,
     selectSubtitleTrack,
+    showQuality,
+    showSpeed,
+    showStats,
+    showTracks,
     wake,
   ]);
 
-  // Lock body scroll while the player is up.
   useEffect(() => {
-    const prev = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    return () => {
-      document.body.style.overflow = prev;
+    if (!("mediaSession" in navigator)) return undefined;
+    if ("MediaMetadata" in window) {
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: item?.Name || "Jellyflow",
+        artist: item?.SeriesName || item?.AlbumArtist || "",
+        album: item?.SeasonName || item?.Album || "",
+        artwork: item?.Id
+          ? [{ src: client.image(item, "Primary", { w: 512, q: 88 }) }]
+          : [],
+      });
+    }
+
+    const handlers = {
+      play: () => {
+        userPausedRef.current = false;
+        videoRef.current?.play().catch(() => {});
+      },
+      pause: () => {
+        userPausedRef.current = true;
+        videoRef.current?.pause();
+      },
+      seekbackward: (details) => skip(-(details.seekOffset || 10)),
+      seekforward: (details) => skip(details.seekOffset || 10),
+      seekto: (details) => {
+        if (duration > 0 && Number.isFinite(details.seekTime)) seekTo(details.seekTime / duration);
+      },
+      stop: onClose,
+      nexttrack: nextItem && onPlayNext ? onPlayNext : null,
     };
+    for (const [action, handler] of Object.entries(handlers)) {
+      try {
+        navigator.mediaSession.setActionHandler(action, handler);
+      } catch {}
+    }
+    return () => {
+      for (const action of Object.keys(handlers)) {
+        try {
+          navigator.mediaSession.setActionHandler(action, null);
+        } catch {}
+      }
+      navigator.mediaSession.metadata = null;
+    };
+  }, [client, duration, item, nextItem, onClose, onPlayNext, seekTo, skip]);
+
+  useEffect(() => {
+    if (!("mediaSession" in navigator)) return;
+    navigator.mediaSession.playbackState = playing ? "playing" : "paused";
+    if (!duration || !Number.isFinite(duration) || !Number.isFinite(current)) return;
+    try {
+      navigator.mediaSession.setPositionState({
+        duration,
+        playbackRate: speed,
+        position: Math.min(duration, Math.max(0, current)),
+      });
+    } catch {}
+  }, [current, duration, playing, speed]);
+
+  useEffect(() => {
+    if (!("wakeLock" in navigator)) return undefined;
+    let cancelled = false;
+    const release = () => {
+      wakeLockRef.current?.release().catch(() => {});
+      wakeLockRef.current = null;
+    };
+    const acquire = async () => {
+      if (!playing || document.visibilityState !== "visible" || wakeLockRef.current) return;
+      try {
+        const lock = await navigator.wakeLock.request("screen");
+        if (cancelled) {
+          lock.release().catch(() => {});
+          return;
+        }
+        wakeLockRef.current = lock;
+        lock.addEventListener("release", () => {
+          if (wakeLockRef.current === lock) wakeLockRef.current = null;
+        });
+      } catch {}
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") acquire();
+    };
+    if (playing) acquire();
+    else release();
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      cancelled = true;
+      document.removeEventListener("visibilitychange", onVisibility);
+      release();
+    };
+  }, [playing]);
+
+  // Freeze the page behind the player. Root overflow alone is not enough on
+  // iOS Safari, where touch panning can still move the body under a fixed UI.
+  useEffect(() => {
+    const unlock = lockDocumentScroll();
+    containerRef.current?.focus({ preventScroll: true });
+    return unlock;
   }, []);
 
   useEffect(() => {
@@ -840,6 +1518,16 @@ export function Player({ item, initialPosition = 0, onClose }) {
   const mediaStreams = useMemo(() => item?.MediaSources?.[0]?.MediaStreams || [], [item]);
   const videoStream = useMemo(() => mediaStreams.find((s) => s.Type === "Video"), [mediaStreams]);
   const audioStream = useMemo(() => mediaStreams.find((s) => s.Type === "Audio"), [mediaStreams]);
+  const autoProfile = qualityProfile(AUTO_CEILING_KEY);
+  const activeAutoHeight = stats?.level?.height || stats?.videoHeight || autoProfile?.maxHeight;
+  const activeStreamBitrate = stats?.level?.bitrate || item?.MediaSources?.[0]?.Bitrate;
+  const activeQualityLabel = quality === "auto"
+    ? `${activeAutoHeight}p`
+    : quality === "2160"
+      ? "4K"
+      : quality === "original"
+        ? "Original"
+        : `${quality}p`;
   const chapters = useMemo(
     () =>
       (item?.Chapters || [])
@@ -847,15 +1535,62 @@ export function Player({ item, initialPosition = 0, onClose }) {
         .filter((c) => duration > 0 && c.time >= 0 && c.time < duration),
     [item, duration],
   );
+  const skipSegment = useMemo(
+    () => findSkippableSegment(mediaSegments, item?.Chapters || [], duration, current),
+    [current, duration, item, mediaSegments],
+  );
+  const canSkipSegment = Boolean(skipSegment);
+  const trickplay = useMemo(() => {
+    const sourceId = item?.MediaSources?.[0]?.Id;
+    const manifests = item?.Trickplay || {};
+    const widths = manifests[sourceId] || Object.values(manifests).find(Boolean);
+    if (!widths) return null;
+    const choices = Object.entries(widths)
+      .map(([width, info]) => ({ ...info, Width: info?.Width || Number(width) }))
+      .filter((info) => info.Width && info.Height && info.Interval && info.TileWidth && info.TileHeight)
+      .sort((a, b) => Math.abs(a.Width - 320) - Math.abs(b.Width - 320));
+    return choices[0] || null;
+  }, [item]);
+  const previewFrac = scrubFrac ?? hoverFrac;
+  const seekPreview = useMemo(() => {
+    if (previewFrac == null || !duration || isLiveTv(item)) return null;
+    const time = Math.max(0, Math.min(duration, previewFrac * duration));
+    const chapter = chapters.slice().reverse().find((entry) => entry.time <= time);
+    if (!trickplay) return { time, chapter, frac: previewFrac };
+    const thumbnailIndex = Math.min(
+      Math.max(0, (trickplay.ThumbnailCount || 1) - 1),
+      Math.floor((time * 1000) / trickplay.Interval),
+    );
+    const thumbnailsPerSheet = trickplay.TileWidth * trickplay.TileHeight;
+    const sheetIndex = Math.floor(thumbnailIndex / thumbnailsPerSheet);
+    const tileIndex = thumbnailIndex % thumbnailsPerSheet;
+    const column = tileIndex % trickplay.TileWidth;
+    const row = Math.floor(tileIndex / trickplay.TileWidth);
+    return {
+      time,
+      chapter,
+      frac: previewFrac,
+      image: client.trickplayTileUrl(item, trickplay.Width, sheetIndex, item?.MediaSources?.[0]?.Id),
+      imageStyle: {
+        width: `${trickplay.Width}px`,
+        height: `${trickplay.Height}px`,
+        backgroundImage: `url("${client.trickplayTileUrl(item, trickplay.Width, sheetIndex, item?.MediaSources?.[0]?.Id)}")`,
+        backgroundPosition: `${-column * trickplay.Width}px ${-row * trickplay.Height}px`,
+        backgroundSize: `${trickplay.Width * trickplay.TileWidth}px ${trickplay.Height * trickplay.TileHeight}px`,
+      },
+    };
+  }, [chapters, client, duration, item, previewFrac, trickplay]);
 
   /* --------------------------------- render -------------------------------- */
 
   return (
     <div
       ref={containerRef}
-      className={`player ${uiVisible ? "" : "player-idle"}`}
+      className={`player ${uiVisible ? "" : "player-idle"} ${showStats || showQuality ? "player-popover-pinned" : ""}`}
       role="dialog"
-      aria-label={`Playing ${item?.Name || "media"}`}
+      aria-modal="true"
+      aria-label={`Playing ${episodeHeading ? `${episodeHeading.title}, ${episodeHeading.subtitle}` : item?.Name || "media"}`}
+      tabIndex={-1}
       onMouseMove={wake}
       onClick={wake}
     >
@@ -877,28 +1612,52 @@ export function Player({ item, initialPosition = 0, onClose }) {
           Between "no captions" and "no video," this keeps video working. */}
       <video
         ref={videoRef}
-        className="player-video"
+        className={`player-video player-subtitle-${subtitleSize} player-subtitle-bg-${subtitleBackground}`}
         playsInline
         autoPlay
-        onPlay={() => setPlaying(true)}
-        onPause={() => setPlaying(false)}
-        onWaiting={() => setBuffering(true)}
-        onPlaying={() => setBuffering(false)}
+        onPlay={() => {
+          setPlaying(true);
+          report(reportablePosition(videoRef.current));
+        }}
+        onPause={() => {
+          setPlaying(false);
+          report(reportablePosition(videoRef.current));
+        }}
+        onWaiting={onVideoWaiting}
+        onPlaying={onVideoPlaying}
         onTimeUpdate={onTime}
         onDurationChange={() => setDuration(videoRef.current?.duration || 0)}
         onLoadedMetadata={() => setDuration(videoRef.current?.duration || 0)}
-        onEnded={() => onClose()}
+        onEnded={() => {
+          completedRef.current = true;
+          lastPositionRef.current = videoRef.current?.duration || lastPositionRef.current;
+          if (nextItem && onPlayNext) onPlayNext();
+          else onClose();
+        }}
         onDoubleClick={toggleFullscreen}
         onError={() => {
           if (hlsRef.current) return; // hls handles its own errors
           setBuffering(false);
-          if (!error) setError("Couldn't start this file. It may not be playable in this browser.");
+          if (!error) {
+            setError(
+              navigator.onLine
+                ? "Couldn't start this file. It may not be playable in this browser."
+                : "You appear to be offline. Playback will retry when the connection returns.",
+            );
+          }
         }}
       >
         {subtitleTracks
           .filter((t) => t.url)
           .map((t) => (
-            <track key={t.id} kind="subtitles" src={t.url} srcLang={t.lang || undefined} label={t.name} />
+            <track
+              key={t.id}
+              kind="subtitles"
+              src={t.url}
+              srcLang={t.lang || undefined}
+              label={t.name}
+              onLoad={restoreDirectSubtitlePreference}
+            />
           ))}
       </video>
 
@@ -912,10 +1671,62 @@ export function Player({ item, initialPosition = 0, onClose }) {
       {error && (
         <div className="player-loading" style={{ flexDirection: "column", gap: 16 }}>
           <b style={{ fontFamily: "var(--font-display)", fontSize: 18 }}>{error}</b>
-          <button className="btn" onClick={onClose}>
-            Close
-          </button>
+          <div className="player-error-actions">
+            <button className="btn btn-primary" onClick={retryPlayback}>Retry</button>
+            {!isLiveTv(item) && <button className="btn" onClick={retryAtLowerQuality}>Try lower quality</button>}
+            {quality !== "original" && !isLiveTv(item) && (
+              <button
+                className="btn"
+                onClick={() => {
+                  setError(null);
+                  setQuality("original");
+                  savePrefs({ quality: "original" });
+                }}
+              >
+                Play original
+              </button>
+            )}
+            <button className="btn" onClick={onClose}>Close</button>
+          </div>
         </div>
+      )}
+
+      {canSkipSegment && !error && !showStats && !showQuality && !showSpeed && !showTracks && (
+        <button
+          className="player-skip-intro"
+          onClick={() => seekTo(skipSegment.end / duration)}
+          aria-label={`Skip ${skipSegment.type.toLowerCase()}`}
+        >
+          <span>Skip {skipSegment.type.toLowerCase()}</span>
+          <span aria-hidden="true">›</span>
+        </button>
+      )}
+
+      {nextItem && duration > 0 && duration - current <= 30 && !nextPromptDismissed && !error && (
+        <aside className="player-next" aria-label="Next episode">
+          <div className="player-next-art" aria-hidden="true">
+            {nextItem.PrimaryImageAspectRatio ? (
+              <img src={client.image(nextItem, "Primary", { w: 360, h: 203, q: 82 })} alt="" />
+            ) : (
+              <span>E{nextItem.IndexNumber ?? "–"}</span>
+            )}
+          </div>
+          <div className="player-next-copy">
+            <span>Up next</span>
+            <b>{nextItem.Name || "Next episode"}</b>
+            <small>
+              {nextItem.SeasonName || `Season ${nextItem.ParentIndexNumber ?? "–"}`} · Episode {nextItem.IndexNumber ?? "–"}
+            </small>
+          </div>
+          <div className="player-next-actions">
+            <button className="btn btn-primary" onClick={onPlayNext}>
+              Play next
+            </button>
+            <button className="player-next-dismiss" onClick={() => setNextPromptDismissed(true)}>
+              Watch credits
+            </button>
+          </div>
+        </aside>
       )}
 
       <div className="player-bottom">
@@ -926,12 +1737,20 @@ export function Player({ item, initialPosition = 0, onClose }) {
           onPointerUp={onTrackPointerUp}
           onPointerCancel={onTrackPointerCancel}
           onLostPointerCapture={onTrackLostPointerCapture}
+          onPointerLeave={() => setHoverFrac(null)}
           role="slider"
           aria-label="Seek"
           aria-valuemin={0}
           aria-valuemax={Math.round(duration) || 0}
           aria-valuenow={Math.round(pct * (duration || 0))}
         >
+          {bufferedRanges.map((range, index) => (
+            <div
+              className="player-buffered"
+              key={`${index}-${range.left.toFixed(2)}`}
+              style={{ left: `${range.left}%`, width: `${range.width}%` }}
+            />
+          ))}
           <div className="player-fill" style={{ width: `${pct * 100}%` }} />
           {chapters.map((c, i) => (
             <div
@@ -942,6 +1761,19 @@ export function Player({ item, initialPosition = 0, onClose }) {
             />
           ))}
           <div className="player-knob" style={{ left: `${pct * 100}%` }} />
+          {seekPreview && (
+            <div
+              className="player-seek-preview"
+              style={{ "--preview-left": `${seekPreview.frac * 100}%` }}
+              aria-hidden="true"
+            >
+              {seekPreview.image && <div className="player-seek-preview-image" style={seekPreview.imageStyle} />}
+              <div className="player-seek-preview-copy">
+                {seekPreview.chapter?.name && <span>{seekPreview.chapter.name}</span>}
+                <b>{fmtClock(seekPreview.time)}</b>
+              </div>
+            </div>
+          )}
         </div>
 
         <div className="player-controls">
@@ -1029,6 +1861,54 @@ export function Player({ item, initialPosition = 0, onClose }) {
                             {t.name || t.lang || `Track ${t.id + 1}`}
                           </button>
                         ))}
+                        <div className="player-menu-label">Subtitle size</div>
+                        <div className="player-menu-options">
+                          {[
+                            ["small", "Small"],
+                            ["normal", "Normal"],
+                            ["large", "Large"],
+                          ].map(([value, label]) => (
+                            <button
+                              key={value}
+                              role="menuitemradio"
+                              aria-checked={subtitleSize === value}
+                              className={subtitleSize === value ? "on" : ""}
+                              onClick={() => changeSubtitleStyle({ subtitleSize: value })}
+                            >
+                              {label}
+                            </button>
+                          ))}
+                        </div>
+                        <div className="player-menu-label">Subtitle background</div>
+                        <div className="player-menu-options">
+                          {[
+                            ["none", "None"],
+                            ["shadow", "Shadow"],
+                            ["dark", "Dark"],
+                          ].map(([value, label]) => (
+                            <button
+                              key={value}
+                              role="menuitemradio"
+                              aria-checked={subtitleBackground === value}
+                              className={subtitleBackground === value ? "on" : ""}
+                              onClick={() => changeSubtitleStyle({ subtitleBackground: value })}
+                            >
+                              {label}
+                            </button>
+                          ))}
+                        </div>
+                        <div className="player-menu-label">Subtitle timing</div>
+                        <div className="player-menu-options player-menu-options-delay">
+                          <button role="menuitem" onClick={() => changeSubtitleDelay(-0.5)}>−0.5s</button>
+                          <button
+                            role="menuitem"
+                            className={subtitleDelay === 0 ? "on" : ""}
+                            onClick={() => changeSubtitleDelay(-subtitleDelay)}
+                          >
+                            {subtitleDelay > 0 ? "+" : ""}{subtitleDelay.toFixed(1)}s
+                          </button>
+                          <button role="menuitem" onClick={() => changeSubtitleDelay(0.5)}>+0.5s</button>
+                        </div>
                       </>
                     )}
                     {audioTracks.length > 1 && (
@@ -1083,7 +1963,7 @@ export function Player({ item, initialPosition = 0, onClose }) {
             )}
           </div>
 
-          <div className="player-popover-wrap player-stats-wrap">
+          <div className="player-popover-wrap player-stats-wrap player-persistent-popover" data-persistent-popover="stats">
             <button
               className={`player-btn ${showStats ? "on" : ""}`}
               onClick={() => {
@@ -1103,17 +1983,45 @@ export function Player({ item, initialPosition = 0, onClose }) {
                   <span>Play method</span>
                   <b>{stats?.playMethod || "—"}</b>
                 </div>
+                <div className="player-stats-row player-stats-reason">
+                  <span>Reason</span>
+                  <b>{stats?.playbackReason || "—"}</b>
+                </div>
                 <div className="player-stats-row">
                   <span>Resolution</span>
                   <b>{stats?.videoWidth ? `${stats.videoWidth}×${stats.videoHeight}` : "—"}</b>
                 </div>
                 <div className="player-stats-row">
                   <span>Stream bitrate</span>
-                  <b>{stats?.level?.bitrate ? `${Math.round(stats.level.bitrate / 1000)} kbps` : "—"}</b>
+                  <b>{activeStreamBitrate ? `${Math.round(activeStreamBitrate / 1000)} kbps` : "—"}</b>
                 </div>
+                {quality === "auto" && (
+                  <>
+                    <div className="player-stats-row">
+                      <span>Auto ceiling</span>
+                      <b>{autoProfile ? `${autoProfile.maxHeight}p` : "—"}</b>
+                    </div>
+                    <div className="player-stats-row">
+                      <span>Estimated connection</span>
+                      <b>
+                        {Number.isFinite(stats?.bandwidthEstimate)
+                          ? `${(stats.bandwidthEstimate / 1_000_000).toFixed(1)} Mbps`
+                          : "Measuring…"}
+                      </b>
+                    </div>
+                    <div className="player-stats-row">
+                      <span>Auto decision</span>
+                      <b>{stats?.autoDecision || "Measuring…"}</b>
+                    </div>
+                  </>
+                )}
                 <div className="player-stats-row">
                   <span>Buffered ahead</span>
                   <b>{stats?.bufferedAhead != null ? `${stats.bufferedAhead.toFixed(1)}s` : "—"}</b>
+                </div>
+                <div className="player-stats-row">
+                  <span>Skip markers</span>
+                  <b>{segmentStatus}</b>
                 </div>
                 <div className="player-stats-row">
                   <span>Dropped frames</span>
@@ -1137,19 +2045,20 @@ export function Player({ item, initialPosition = 0, onClose }) {
             )}
           </div>
 
-          <div className="player-popover-wrap">
+          <div className="player-popover-wrap player-persistent-popover" data-persistent-popover="quality">
             <button
-              className={`player-btn ${showQuality ? "on" : ""}`}
+              className={`player-btn player-quality-btn ${showQuality ? "on" : ""}`}
               onClick={() => {
                 setShowQuality((s) => !s);
                 setShowStats(false);
                 setShowSpeed(false);
                 setShowTracks(false);
               }}
-              aria-label="Quality"
-              title="Quality"
+              aria-label={`Quality: ${quality === "auto" ? `Auto, ${activeAutoHeight}p` : quality}`}
+              title={quality === "auto" ? `Auto · ${activeAutoHeight}p` : "Quality"}
             >
               <IconSettings size={19} />
+              <span className="player-quality-label">{activeQualityLabel}</span>
             </button>
             {showQuality && (
               <div className="player-menu" role="menu">
@@ -1160,12 +2069,17 @@ export function Player({ item, initialPosition = 0, onClose }) {
                     aria-checked={quality === o.key}
                     className={quality === o.key ? "on" : ""}
                     onClick={() => {
+                      if (o.key === "auto" && quality !== "auto") {
+                        setAutoQuality(initialAutoQuality());
+                        setForceAdaptive(false);
+                        directStallsRef.current = [];
+                      }
                       setQuality(o.key);
                       savePrefs({ quality: o.key });
                       setShowQuality(false);
                     }}
                   >
-                    {o.label}
+                    {o.key === "auto" && quality === "auto" ? `Auto · ${activeAutoHeight}p` : o.label}
                   </button>
                 ))}
               </div>
@@ -1187,10 +2101,14 @@ export function Player({ item, initialPosition = 0, onClose }) {
           </div>
 
           <div className="player-title">
-            <b>{item?.Name || "Untitled"}</b>
+            <b>{episodeHeading?.title || item?.Name || "Untitled"}</b>
             <span>
-              {item?.ProductionYear ? item.ProductionYear + " · " : ""}
-              {isAudioOnly(item) ? "Audio" : "Video"}
+              {episodeHeading?.subtitle || (
+                <>
+                  {item?.ProductionYear ? item.ProductionYear + " · " : ""}
+                  {isAudioOnly(item) ? "Audio" : "Video"}
+                </>
+              )}
             </span>
           </div>
         </div>

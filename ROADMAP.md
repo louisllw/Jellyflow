@@ -4,8 +4,8 @@ Jellyflow is an early beta. The immediate goal is dependable everyday playback b
 
 ## Now — playback confidence
 
-- Use Jellyfin playback negotiation and device profiles instead of assuming a single HLS path.
-- Add automatic next-episode playback and a visible playback queue.
+- Broaden real-device coverage for Jellyfin playback negotiation and codec selection.
+- Extend automatic next-episode playback with a visible, editable queue and alternate play orders.
 - Add browser and mobile playback regression coverage.
 - Capture privacy-safe screenshots for the project page.
 

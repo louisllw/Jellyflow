@@ -256,7 +256,7 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
           lang: s.Language,
           url: `${client.serverUrl}${s.DeliveryUrl}${
             s.DeliveryUrl.includes("?") ? "&" : "?"
-          }api_key=${encodeURIComponent(client.token)}`,
+          }ApiKey=${encodeURIComponent(client.token)}`,
         }));
     };
 
@@ -476,7 +476,7 @@ export function Player({ item, initialPosition = 0, nextItem = null, onPlayNext,
                   Math.floor((autoStartProfile?.maxBitrate || 0) * 0.7),
               )
             : {}),
-          // Some servers reject the query-string api_key on HLS requests and
+          // Some servers reject query-string authentication on HLS requests and
           // require the full Authorization header instead — hls.js can't rely
           // on <video src> query params, so we set it on every XHR it makes.
           xhrSetup: (xhr, requestUrl) => {

@@ -4,6 +4,7 @@
 
 Bug fixes:
 
+- Query-string authentication now uses Jellyfin 12's `ApiKey` parameter for WebSockets, images, subtitles, trickplay and media URLs. This restores socket and media authentication after Jellyfin 12 disabled the legacy lowercase `api_key` parameter.
 - The SyncPlay socket no longer reconnects forever when its session token is dead (for example after server-side sign-out or a token cleared by an admin). Each reconnect now re-validates the token first; on a 401/403 it stops retrying and the app clears the local session with the "Your session expired — sign in again." prompt instead of spamming the server with an unauthenticated `/socket` request every few seconds.
 - `connectSocket` also refuses to start without a token, and an unparseable server URL no longer throws out of the reconnect path.
 - Added Node regression coverage for the socket retry/stop behaviour.

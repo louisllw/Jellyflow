@@ -55,7 +55,8 @@ test("socket reconnect stops permanently when the token is dead", async (t) => {
     client.onSessionExpired = () => { expired += 1; };
     client.connectSocket();
     assert.equal(sockets.length, 1);
-    assert.ok(sockets[0].url.includes("api_key=dead"));
+    assert.equal(new URL(sockets[0].url).searchParams.get("ApiKey"), "dead");
+    assert.equal(new URL(sockets[0].url).searchParams.has("api_key"), false);
 
     sockets[0].simulateClose();
     await flush();

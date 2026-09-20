@@ -2,7 +2,7 @@
 // container-configured servers are reached through Jellyflow's same-origin proxy.
 //
 // JSON calls use the X-Emby-Token header. Images and stream URLs use the
-// `api_key` query parameter instead, because <img> tags and the hls.js XHR
+// `ApiKey` query parameter instead, because <img> tags and the hls.js XHR
 // pipeline cannot set custom headers.
 
 import { buildDeviceProfile } from "./deviceProfile.js";
@@ -272,7 +272,7 @@ export async function listUsersWithApiKey(serverUrl, apiKey) {
 export function userAvatarUrl(serverUrl, apiKey, user) {
   if (!user || !user.Id || !user.PrimaryImageTag) return "";
   const base = normalizeServerUrl(serverUrl);
-  return `${base}/Users/${user.Id}/Images/Primary?api_key=${encodeURIComponent(apiKey)}&quality=80&maxWidth=200`;
+  return `${base}/Users/${user.Id}/Images/Primary?ApiKey=${encodeURIComponent(apiKey)}&quality=80&maxWidth=200`;
 }
 
 /* ------------------------------- the client ------------------------------- */
@@ -602,11 +602,11 @@ export class Jellyfin {
 
   /* --------------------------------- media -------------------------------- */
 
-  /** Build an <img>-friendly URL (api_key in query, since headers are off the table). */
+  /** Build an <img>-friendly URL (ApiKey in query, since headers are off the table). */
   image(item, type, { w = 600, h, q = 80 } = {}) {
     const id = typeof item === "object" ? item && item.Id : item;
     if (!id) return "";
-    let url = `${this.serverUrl}/Items/${id}/Images/${type}?api_key=${encodeURIComponent(
+    let url = `${this.serverUrl}/Items/${id}/Images/${type}?ApiKey=${encodeURIComponent(
       this.token,
     )}&quality=${q}&maxWidth=${w}`;
     if (h) url += `&maxHeight=${h}`;
@@ -617,7 +617,7 @@ export class Jellyfin {
     const id = typeof item === "object" ? item?.Id : item;
     if (!id || !width || index == null) return "";
     return `${this.serverUrl}/Videos/${id}/Trickplay/${width}/${index}.jpg${qs({
-      api_key: this.token,
+      ApiKey: this.token,
       MediaSourceId: mediaSourceId,
     })}`;
   }
@@ -682,7 +682,7 @@ export class Jellyfin {
     // negotiation rules out direct play. H264/AAC is the transcode target
     // virtually every browser can play, so it stays codec-stable.
     return `${this.serverUrl}/Videos/${id}/master.m3u8${qs({
-      api_key: this.token,
+      ApiKey: this.token,
       MediaSourceId: ms,
       PlaySessionId: playSessionId,
       VideoCodec: "h264",
@@ -703,7 +703,7 @@ export class Jellyfin {
     const ms =
       mediaSourceId || (typeof item === "object" ? item.MediaSources && item.MediaSources[0] && item.MediaSources[0].Id : undefined);
     const kind = audio ? "Audio" : "Videos";
-    let url = `${this.serverUrl}/${kind}/${id}/stream?Static=true&api_key=${encodeURIComponent(this.token)}`;
+    let url = `${this.serverUrl}/${kind}/${id}/stream?Static=true&ApiKey=${encodeURIComponent(this.token)}`;
     if (ms) url += `&MediaSourceId=${encodeURIComponent(ms)}`;
     return url;
   }
@@ -711,7 +711,12 @@ export class Jellyfin {
   mediaUrl(path, { authenticate = true } = {}) {
     if (!path) return "";
     const url = new URL(path, `${this.serverUrl}/`);
-    if (authenticate && !url.searchParams.has("api_key")) url.searchParams.set("api_key", this.token);
+    // Jellyfin 12 disables the legacy lowercase api_key parameter. Normalize
+    // server-provided legacy URLs as well as URLs built by this client.
+    const legacyToken = url.searchParams.get("api_key");
+    if (legacyToken && !url.searchParams.has("ApiKey")) url.searchParams.set("ApiKey", legacyToken);
+    url.searchParams.delete("api_key");
+    if (authenticate && !url.searchParams.has("ApiKey")) url.searchParams.set("ApiKey", this.token);
     return url.toString();
   }
 
@@ -750,7 +755,7 @@ export class Jellyfin {
     }
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
     url.pathname = `${url.pathname.replace(/\/$/, "")}/socket`;
-    url.search = new URLSearchParams({ api_key: this.token, deviceId: getDeviceId() }).toString();
+    url.search = new URLSearchParams({ ApiKey: this.token, deviceId: getDeviceId() }).toString();
     const socket = new WebSocket(url);
     this._socket = socket;
     socket.onmessage = (event) => {

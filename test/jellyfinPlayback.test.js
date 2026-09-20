@@ -7,7 +7,7 @@ globalThis.localStorage = {
   removeItem() {},
 };
 
-const { Jellyfin } = await import("../src/api/jellyfin.js");
+const { Jellyfin, userAvatarUrl } = await import("../src/api/jellyfin.js");
 
 function client() {
   return new Jellyfin({ serverUrl: "https://example.test", token: "secret", userId: "user" });
@@ -25,9 +25,28 @@ test("HLS URLs preserve the quality target and adaptive flag", () => {
   assert.equal(adaptive.searchParams.get("AudioBitrate"), "192000");
   assert.equal(adaptive.searchParams.get("MaxHeight"), "720");
   assert.equal(adaptive.searchParams.get("EnableAdaptiveBitrateStreaming"), "true");
+  assert.equal(adaptive.searchParams.get("ApiKey"), "secret");
+  assert.equal(adaptive.searchParams.has("api_key"), false);
 
   const fixed = new URL(client().streamUrl(item, { maxBitrate: 3_000_000, adaptive: false }));
   assert.equal(fixed.searchParams.get("EnableAdaptiveBitrateStreaming"), "false");
+});
+
+test("media URLs use Jellyfin 12 query authentication", () => {
+  const api = client();
+  const urls = [
+    new URL(userAvatarUrl(api.serverUrl, api.token, { Id: "user", PrimaryImageTag: "tag" })),
+    new URL(api.image("item", "Primary")),
+    new URL(api.trickplayTileUrl("item", 320, 2, "source")),
+    new URL(api.directUrl({ Id: "item", MediaSources: [{ Id: "source" }] })),
+    new URL(api.mediaUrl("/Videos/item/master.m3u8?api_key=legacy&PlaySessionId=session")),
+  ];
+
+  for (const url of urls) {
+    assert.ok(url.searchParams.has("ApiKey"));
+    assert.equal(url.searchParams.has("api_key"), false);
+  }
+  assert.equal(urls.at(-1).searchParams.get("ApiKey"), "legacy");
 });
 
 test("playback session start reports the negotiated method and session", async () => {

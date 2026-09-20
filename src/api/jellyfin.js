@@ -739,9 +739,15 @@ export class Jellyfin {
   }
 
   connectSocket() {
-    if (typeof WebSocket === "undefined" || this._socket?.readyState <= 1) return;
+    if (typeof WebSocket === "undefined" || this._socket?.readyState <= 1 || !this.token) return;
     this._socketStopped = false;
-    const url = new URL(this.serverUrl);
+    let url;
+    try {
+      url = new URL(this.serverUrl);
+    } catch {
+      this._socketStopped = true;
+      return;
+    }
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
     url.pathname = `${url.pathname.replace(/\/$/, "")}/socket`;
     url.search = new URLSearchParams({ api_key: this.token, deviceId: getDeviceId() }).toString();
@@ -760,7 +766,23 @@ export class Jellyfin {
     };
     socket.onclose = () => {
       if (this._socket === socket) this._socket = null;
-      if (!this._socketStopped) window.setTimeout(() => this.connectSocket(), 2_500);
+      if (this._socketStopped) return;
+      // Retry only while our token still works. A 401/403 means the session is
+      // dead, so reconnecting every few seconds would spam the server forever;
+      // stop and let the session surface a re-sign-in instead.
+      return this.me()
+        .catch((e) => {
+          if (e instanceof ApiError && (e.status === 401 || e.status === 403)) {
+            this._socketStopped = true;
+            this.onSessionExpired?.();
+          }
+        })
+        .then(() => {
+          if (!this._socketStopped)
+            window.setTimeout(() => {
+              if (!this._socketStopped) this.connectSocket();
+            }, 2_500);
+        });
     };
   }
 

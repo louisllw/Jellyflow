@@ -128,6 +128,17 @@ export function SessionProvider({ children }) {
         if (!alive) return;
         setUser(u);
         clientRef.current.registerCapabilities();
+        // The socket keeps reconnecting on every close; if its auth probe
+        // finds the token is dead, stop the loop and surface re-sign-in the
+        // same way a failed boot revalidation does.
+        clientRef.current.onSessionExpired = () => {
+          if (!alive) return;
+          clearConfig();
+          clientRef.current = null;
+          setCfg(null);
+          setUser(null);
+          setAuthError("Your session expired — sign in again.");
+        };
         clientRef.current.connectSocket();
         // Replace, don't mutate: cfg lives in state, and mutating it in place
         // would skip re-renders for anything keyed on the object's identity.

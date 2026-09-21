@@ -8,6 +8,8 @@ A redesigned, flowing web client for [Jellyfin](https://jellyfin.org): dark, res
 
 > **Beta software:** Jellyflow is an independent community project. It is not affiliated with, maintained by, or endorsed by the Jellyfin project. Keep a standard Jellyfin client available while testing.
 
+**Try it:** [jellyflow.louisllw.dev](https://jellyflow.louisllw.dev) is a public instance you can point at your own Jellyfin server.
+
 ## Screenshots
 
 | Home | Series details |

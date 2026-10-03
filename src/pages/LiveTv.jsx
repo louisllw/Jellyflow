@@ -56,7 +56,7 @@ export function LiveTv() {
     let alive = true;
     setError(null);
     const now = new Date();
-    Promise.all([
+    Promise.allSettled([
       client.liveTvChannels({ limit: 250 }),
       client.liveTvPrograms({
         MinEndDate: now.toISOString(),
@@ -67,11 +67,26 @@ export function LiveTv() {
     ])
       .then(([channelResult, programResult, recordingResult]) => {
         if (!alive) return;
-        setChannels(channelResult?.Items || []);
-        setPrograms(programResult?.Items || []);
-        setRecordings(recordingResult?.Items || []);
+        const failures = [];
+        if (channelResult.status === "fulfilled") {
+          setChannels(channelResult.value?.Items || []);
+        } else {
+          setError(channelResult.reason);
+        }
+        if (programResult.status === "fulfilled") {
+          setPrograms(programResult.value?.Items || []);
+        } else {
+          setPrograms([]);
+          failures.push(`The guide could not be loaded: ${programResult.reason?.message || "server error"}`);
+        }
+        if (recordingResult.status === "fulfilled") {
+          setRecordings(recordingResult.value?.Items || []);
+        } else {
+          setRecordings([]);
+          failures.push(`Recordings could not be loaded: ${recordingResult.reason?.message || "server error"}`);
+        }
+        if (failures.length) setNotice(failures.join(" "));
       })
-      .catch((e) => alive && setError(e));
     return () => {
       alive = false;
     };

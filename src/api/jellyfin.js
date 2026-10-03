@@ -732,7 +732,11 @@ export class Jellyfin {
 
   mediaUrl(path, { authenticate = true } = {}) {
     if (!path) return "";
-    const url = new URL(path, `${this.serverUrl}/`);
+    // Resolve as a relative path so a configured Jellyfin base path (e.g.
+    // "/jellyfin" behind a reverse proxy) is preserved; an absolute "/Videos/..."
+    // would otherwise resolve against the origin and drop the base path.
+    const relativePath = path.startsWith("/") ? path.slice(1) : path;
+    const url = new URL(relativePath, `${this.serverUrl}/`);
     // Jellyfin 12 disables the legacy lowercase api_key parameter. Normalize
     // server-provided legacy URLs as well as URLs built by this client.
     const legacyToken = url.searchParams.get("api_key");

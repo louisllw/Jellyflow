@@ -9,8 +9,8 @@ globalThis.localStorage = {
 
 const { Jellyfin, userAvatarUrl } = await import("../src/api/jellyfin.js");
 
-function client() {
-  return new Jellyfin({ serverUrl: "https://example.test", token: "secret", userId: "user" });
+function client(serverUrl = "https://example.test") {
+  return new Jellyfin({ serverUrl, token: "secret", userId: "user" });
 }
 
 test("HLS URLs preserve the quality target and adaptive flag", () => {
@@ -47,6 +47,15 @@ test("media URLs use Jellyfin 12 query authentication", () => {
     assert.equal(url.searchParams.has("api_key"), false);
   }
   assert.equal(urls.at(-1).searchParams.get("ApiKey"), "legacy");
+});
+
+test("negotiated media URLs preserve a Jellyfin base path", () => {
+  const url = new URL(client("https://example.test/jellyfin").mediaUrl(
+    "/Videos/item/master.m3u8?PlaySessionId=session",
+  ));
+  assert.equal(url.pathname, "/jellyfin/Videos/item/master.m3u8");
+  assert.equal(url.searchParams.get("PlaySessionId"), "session");
+  assert.equal(url.searchParams.get("ApiKey"), "secret");
 });
 
 test("playback session start reports the negotiated method and session", async () => {
